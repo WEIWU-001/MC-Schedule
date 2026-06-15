@@ -7231,11 +7231,6 @@ def export_schedules():
     except Exception as e:
         return jsonify({'ok': 0, 'msg': f'导出失败: {str(e)}'})
 
-# 获取统计数据
-@app.route('/admin/data/stats', methods=['POST'])
-def get_data_stats():
-    uid = session.get('user')
-
 # 检查更新
 @app.route('/admin/check_update', methods=['POST'])
 def check_update():
@@ -7248,18 +7243,18 @@ def check_update():
         return jsonify({'ok': 0, 'msg': '权限不足（仅最高管理员可用）'})
     
     try:
-        import subprocess
+        import os
         
         # 从配置获取远程仓库地址
         remote_repo_url = app.config.get('REMOTE_REPO_URL', 'https://github.com/WEIWU-001/MC-Schedule.git')
-        default_branch = app.config.get('DEFAULT_BRANCH', 'main')
+        default_branch = app.config.get('DEFAULT_BRANCH', 'master')
         
         # 获取当前版本（从git）
         try:
-            current_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], 
-                                                    capture_output=True, text=True).strip()
-            current_branch = subprocess.check_output(['git', 'branch', '--show-current'],
-                                                    capture_output=True, text=True).strip()
+            with os.popen('git rev-parse HEAD') as f:
+                current_commit = f.read().strip()
+            with os.popen('git branch --show-current') as f:
+                current_branch = f.read().strip()
             if not current_branch:
                 current_branch = default_branch
         except:
@@ -7269,19 +7264,19 @@ def check_update():
         # 检查远程仓库更新
         try:
             # 添加/更新远程仓库
-            subprocess.run(['git', 'remote', 'remove', 'origin'], capture_output=True)
-            subprocess.run(['git', 'remote', 'add', 'origin', remote_repo_url], capture_output=True)
-            subprocess.run(['git', 'fetch', 'origin'], capture_output=True)
+            os.system('git remote remove origin >nul 2>&1')
+            os.system(f'git remote add origin {remote_repo_url} >nul 2>&1')
+            os.system('git fetch origin >nul 2>&1')
             
-            remote_commit = subprocess.check_output(['git', 'rev-parse', 'origin/' + current_branch],
-                                                  capture_output=True, text=True).strip()
+            with os.popen(f'git rev-parse origin/{current_branch}') as f:
+                remote_commit = f.read().strip()
             
             has_update = current_commit != remote_commit
             
             # 获取更新日志
             if has_update:
-                log_output = subprocess.check_output(['git', 'log', '--oneline', f'{current_commit}..origin/{current_branch}', '-n', '10'],
-                                                    capture_output=True, text=True).strip()
+                with os.popen(f'git log --oneline {current_commit}..origin/{current_branch} -n 10') as f:
+                    log_output = f.read().strip()
                 update_log = log_output.split('\n') if log_output else []
             else:
                 update_log = []
@@ -7313,32 +7308,35 @@ def do_update():
         return jsonify({'ok': 0, 'msg': '权限不足（仅最高管理员可用）'})
     
     try:
-        import subprocess
+        import os
         
         # 从配置获取远程仓库地址
         remote_repo_url = app.config.get('REMOTE_REPO_URL', 'https://github.com/WEIWU-001/MC-Schedule.git')
-        default_branch = app.config.get('DEFAULT_BRANCH', 'main')
+        default_branch = app.config.get('DEFAULT_BRANCH', 'master')
         
         # 更新远程仓库地址并拉取最新代码
-        subprocess.run(['git', 'remote', 'remove', 'origin'], capture_output=True)
-        subprocess.run(['git', 'remote', 'add', 'origin', remote_repo_url], capture_output=True)
-        result = subprocess.run(['git', 'pull', 'origin', default_branch], capture_output=True, text=True)
+        os.system('git remote remove origin >nul 2>&1')
+        os.system(f'git remote add origin {remote_repo_url} >nul 2>&1')
+        exit_code = os.system(f'git pull origin {default_branch} >git_pull_output.txt 2>&1')
         
-        if result.returncode == 0:
+        with open('git_pull_output.txt', 'r', encoding='utf-8', errors='ignore') as f:
+            output = f.read()
+        
+        if exit_code == 0:
             # 获取更新后的版本
-            current_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'],
-                                                    capture_output=True, text=True).strip()
+            with os.popen('git rev-parse HEAD') as f:
+                current_commit = f.read().strip()
             
             return jsonify({
                 'ok': 1,
                 'msg': '更新成功！请重启服务器以应用更改',
                 'new_version': current_commit[:7],
-                'output': result.stdout
+                'output': output
             })
         else:
             return jsonify({
                 'ok': 0,
-                'msg': f'更新失败: {result.stderr}'
+                'msg': f'更新失败: {output}'
             })
     except Exception as e:
         return jsonify({'ok': 0, 'msg': f'更新失败: {str(e)}'})
