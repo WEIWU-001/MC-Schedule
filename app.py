@@ -7261,35 +7261,74 @@ def check_update():
             current_commit = '未知'
             current_branch = default_branch
         
-        # 检查远程仓库更新
+        # 检查远程仓库更新（优化版：使用 ls-remote 避免下载整个仓库）
         try:
-            # 添加/更新远程仓库
-            os.system('git remote remove origin >nul 2>&1')
-            os.system(f'git remote add origin {remote_repo_url} >nul 2>&1')
-            os.system('git fetch origin >nul 2>&1')
+            # 检查远程仓库是否已配置
+            with os.popen('git remote get-url origin') as f:
+                current_remote = f.read().strip()
             
-            with os.popen(f'git rev-parse origin/{current_branch}') as f:
-                remote_commit = f.read().strip()
+            # 如果远程仓库地址不对，更新它
+            if current_remote != remote_repo_url:
+                os.system('git remote remove origin >nul 2>&1')
+                os.system(f'git remote add origin {remote_repo_url} >nul 2>&1')
+            
+            # 使用 ls-remote 获取远程分支最新commit（比 fetch 快很多）
+            # 添加超时设置（Windows git Bash 语法）
+            import threading
+            
+            result_container = [None]
+            error_occurred = [False]
+            
+            def fetch_remote():
+                try:
+                    with os.popen(f'git ls-remote --heads origin {current_branch}') as f:
+                        result_container[0] = f.read().strip()
+                except:
+                    error_occurred[0] = True
+            
+            # 启动后台线程获取远程信息
+            fetch_thread = threading.Thread(target=fetch_remote)
+            fetch_thread.daemon = True
+            fetch_thread.start()
+            fetch_thread.join(timeout=10)  # 最多等待10秒
+            
+            remote_line = result_container[0]
+            
+            # 如果超时或失败，返回友好提示
+            if error_occurred[0] or not remote_line:
+                return jsonify({
+                    'ok': 0,
+                    'msg': '连接GitHub超时，请检查网络或配置代理'
+                })
+            
+            # git ls-remote 返回格式: <commit> <refs/heads/branch>
+            remote_commit = remote_line.split()[0]  # 获取commit部分
+            
+            # 如果远程commit为空，说明无法连接到远程仓库
+            if not remote_commit:
+                return jsonify({
+                    'ok': 0,
+                    'msg': '无法获取远程版本，请检查网络连接'
+                })
             
             has_update = current_commit != remote_commit
             
-            # 获取更新日志
+            # 获取更新日志（只在有更新时才获取）
+            update_log = []
             if has_update:
                 with os.popen(f'git log --oneline {current_commit}..origin/{current_branch} -n 10') as f:
                     log_output = f.read().strip()
                 update_log = log_output.split('\n') if log_output else []
-            else:
-                update_log = []
         except Exception as e:
             return jsonify({'ok': 0, 'msg': f'检查更新失败: {str(e)}'})
         
         return jsonify({
             'ok': 1,
             'data': {
-                'current_version': current_commit[:7] if current_commit != '未知' else '未知',
+                'current_version': current_commit[:7] if current_commit and current_commit != '未知' else '未知',
                 'current_branch': current_branch,
                 'has_update': has_update,
-                'latest_version': remote_commit[:7] if has_update else current_commit[:7] if current_commit != '未知' else '未知',
+                'latest_version': remote_commit[:7] if remote_commit else '未知',
                 'update_log': update_log
             }
         })
