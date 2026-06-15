@@ -1,0 +1,13 @@
+flask>=2.0
+flask-mail
+flask-wtf
+flask-cors
+apscheduler
+tencentcloud-sdk-python
+pandas
+matplotlib
+gunicorn
+mcstatus
+python-dotenv
+bcrypt
+coverage

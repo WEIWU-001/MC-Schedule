@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% if code %}{{ code }}{% else %}错误{% endif %} - {{ site_title }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .error-container {
+            text-align: center;
+            padding: 40px;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 500px;
+            width: 90%;
+        }
+        .error-code {
+            font-size: 120px;
+            font-weight: bold;
+            color: #667eea;
+            line-height: 1;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .error-title {
+            font-size: 28px;
+            color: #333;
+            margin-bottom: 15px;
+        }
+        .error-message {
+            font-size: 16px;
+            color: #666;
+            margin-bottom: 30px;
+            line-height: 1.6;
+        }
+        .error-actions {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .btn {
+            display: inline-block;
+            padding: 12px 30px;
+            border-radius: 25px;
+            text-decoration: none;
+            font-size: 16px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            border: none;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+        .btn-secondary {
+            background: white;
+            color: #667eea;
+            border: 2px solid #667eea;
+        }
+        .btn-secondary:hover {
+            background: #f8f9fa;
+            transform: translateY(-2px);
+        }
+        .error-icon {
+            font-size: 60px;
+            margin-bottom: 20px;
+        }
+        @media (max-width: 480px) {
+            .error-code {
+                font-size: 80px;
+            }
+            .error-title {
+                font-size: 22px;
+            }
+            .error-actions {
+                flex-direction: column;
+            }
+            .btn {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <div class="error-icon">
+            {% if code == 404 %}
+                🔍
+            {% elif code == 403 %}
+                🚫
+            {% elif code == 500 %}
+                ⚠️
+            {% elif code == 429 %}
+                ⏳
+            {% else %}
+                ❌
+            {% endif %}
+        </div>
+        <div class="error-code">{{ code if code else '?' }}</div>
+        <div class="error-title">
+            {% if code == 404 %}
+                页面未找到
+            {% elif code == 403 %}
+                访问被拒绝
+            {% elif code == 500 %}
+                服务器错误
+            {% elif code == 429 %}
+                请求过于频繁
+            {% else %}
+                发生错误
+            {% endif %}
+        </div>
+        <div class="error-message">
+            {% if code == 404 %}
+                抱歉，您访问的页面不存在或已被移除
+            {% elif code == 403 %}
+                抱歉，您没有权限访问此页面
+            {% elif code == 500 %}
+                抱歉，服务器发生了一些问题，请稍后再试
+            {% elif code == 429 %}
+                请求过于频繁，请稍后再试
+            {% else %}
+                {{ message if message else '发生了一个未知错误' }}
+            {% endif %}
+        </div>
+        <div class="error-actions">
+            <a href="/" class="btn btn-primary">返回首页</a>
+            <button onclick="history.back()" class="btn btn-secondary">返回上页</button>
+        </div>
+    </div>
+    <script>
+        // 防止用户按空格/回车键刷新页面
+        document.addEventListener('keydown', function(e) {
+            if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+            }
+        });
+    </script>
+</body>
+</html>
