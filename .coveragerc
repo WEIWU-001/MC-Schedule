@@ -1,0 +1,45 @@
+# Coverage 配置文件
+# 文档: https://coverage.readthedocs.io/
+
+[run]
+# 要测试的源文件
+source = .
+# 排除的文件
+omit = 
+    test_*.py
+    run_*.py
+    */site-packages/*
+    */dist-packages/*
+    */__pycache__/*
+    .env/*
+    venv/*
+    env/*
+
+[report]
+# 排除的代码行（通过注释标记）
+exclude_lines =
+    # 排除防御性编程
+    pragma: no cover
+    # 排除调试代码
+    def __repr__
+    # 排除测试代码
+    raise AssertionError
+    raise NotImplementedError
+    # 排除条件分支
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    @abstractmethod
+
+# 显示缺失的行号
+show_missing = True
+
+# 忽略错误
+ignore_errors = True
+
+[html]
+# HTML报告输出目录
+directory = htmlcov
+
+[xml]
+# XML报告输出文件
+output = coverage.xml
