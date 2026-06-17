@@ -61,3 +61,7 @@ TMS_FREE_LIMIT = int(os.environ.get('TMS_FREE_LIMIT', '3000'))
 REMOTE_REPO_URL = os.environ.get('REMOTE_REPO_URL', 'https://github.com/WEIWU-001/MC-Schedule.git')
 # 默认分支
 DEFAULT_BRANCH = os.environ.get('DEFAULT_BRANCH', 'main')
+
+# ==================== 文件上传配置 ====================
+# 最大上传文件大小（15MB），考虑Base64编码会增加约33%的大小
+MAX_CONTENT_LENGTH = 15 * 1024 * 1024
