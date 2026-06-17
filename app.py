@@ -8232,9 +8232,19 @@ def check_update():
     try:
         import os
         
-        # 从配置获取远程仓库地址
+        # 从配置获取远程仓库地址和代理配置
         remote_repo_url = app.config.get('REMOTE_REPO_URL', 'https://github.com/WEIWU-001/MC-Schedule.git')
         default_branch = app.config.get('DEFAULT_BRANCH', 'master')
+        http_proxy = app.config.get('HTTP_PROXY', '')
+        https_proxy = app.config.get('HTTPS_PROXY', '')
+        
+        # 设置代理环境变量
+        if http_proxy:
+            os.environ['HTTP_PROXY'] = http_proxy
+            os.environ['http_proxy'] = http_proxy
+        if https_proxy:
+            os.environ['HTTPS_PROXY'] = https_proxy
+            os.environ['https_proxy'] = https_proxy
         
         # 获取当前版本（从git）
         try:
@@ -8258,6 +8268,12 @@ def check_update():
             if current_remote != remote_repo_url:
                 os.system('git remote remove origin >nul 2>&1')
                 os.system(f'git remote add origin {remote_repo_url} >nul 2>&1')
+            
+            # 配置git代理（临时生效）
+            if http_proxy or https_proxy:
+                proxy_url = https_proxy if https_proxy else http_proxy
+                os.system(f'git config --global http.proxy {proxy_url} >nul 2>&1')
+                os.system(f'git config --global https.proxy {proxy_url} >nul 2>&1')
             
             # 使用 ls-remote 获取远程分支最新commit（比 fetch 快很多）
             # 添加超时设置（Windows git Bash 语法）
@@ -8336,9 +8352,25 @@ def do_update():
     try:
         import os
         
-        # 从配置获取远程仓库地址
+        # 从配置获取远程仓库地址和代理配置
         remote_repo_url = app.config.get('REMOTE_REPO_URL', 'https://github.com/WEIWU-001/MC-Schedule.git')
         default_branch = app.config.get('DEFAULT_BRANCH', 'master')
+        http_proxy = app.config.get('HTTP_PROXY', '')
+        https_proxy = app.config.get('HTTPS_PROXY', '')
+        
+        # 设置代理环境变量
+        if http_proxy:
+            os.environ['HTTP_PROXY'] = http_proxy
+            os.environ['http_proxy'] = http_proxy
+        if https_proxy:
+            os.environ['HTTPS_PROXY'] = https_proxy
+            os.environ['https_proxy'] = https_proxy
+        
+        # 配置git代理（临时生效）
+        if http_proxy or https_proxy:
+            proxy_url = https_proxy if https_proxy else http_proxy
+            os.system(f'git config --global http.proxy {proxy_url} >nul 2>&1')
+            os.system(f'git config --global https.proxy {proxy_url} >nul 2>&1')
         
         # 更新远程仓库地址并拉取最新代码
         os.system('git remote remove origin >nul 2>&1')

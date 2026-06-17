@@ -62,6 +62,11 @@ REMOTE_REPO_URL = os.environ.get('REMOTE_REPO_URL', 'https://github.com/WEIWU-00
 # 默认分支
 DEFAULT_BRANCH = os.environ.get('DEFAULT_BRANCH', 'main')
 
+# ==================== 网络代理配置 ====================
+# 如果服务器无法直接访问GitHub，可配置代理
+HTTP_PROXY = os.environ.get('HTTP_PROXY', '')
+HTTPS_PROXY = os.environ.get('HTTPS_PROXY', '')
+
 # ==================== 文件上传配置 ====================
 # 最大上传文件大小（15MB），考虑Base64编码会增加约33%的大小
 MAX_CONTENT_LENGTH = 15 * 1024 * 1024
