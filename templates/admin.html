@@ -1612,22 +1612,16 @@
                 return;
             }
             
+            // 在 confirm 之前就构建 FormData，避免 confirm 后文件丢失
+            const formData = new FormData();
+            formData.append("update_file", file);
+            
             if(!confirm(`确定要上传更新包 "${file.name}" 吗？\n\n此操作将覆盖项目文件，请确保更新包来源可靠。`)){
                 return;
             }
             
             resultDiv.innerText = "⏳ 上传中...";
             resultDiv.style.color = "#42C9D8";
-            
-            // 重新检查文件（confirm后文件可能被重置）
-            if(!fileInput.files || fileInput.files.length === 0){
-                resultDiv.innerText = "❌ 文件选择被重置，请重新选择文件";
-                resultDiv.style.color = "#E74C3C";
-                return;
-            }
-            
-            const formData = new FormData();
-            formData.append("update_file", fileInput.files[0]);
             
             try{
                 const res = await fetch("/admin/upload_update", {
