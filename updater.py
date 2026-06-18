@@ -238,6 +238,30 @@ class Updater:
             logger.warning(f'API 请求 {source.name} 异常: {e}')
         return None
 
+    def _fetch_remote_version(self, source: UpdateSource) -> Optional[str]:
+        """通过 HTTP 获取远程 VERSION 文件内容"""
+        try:
+            if source.id == 'gitee' or 'gitee.com' in self.remote_repo_url:
+                version_url = 'https://gitee.com/weiwu001/MC-Schedule/raw/master/VERSION'
+            else:
+                version_url = 'https://raw.githubusercontent.com/WEIWU-001/MC-Schedule/master/VERSION'
+            
+            req = urllib.request.Request(version_url)
+            req.add_header('User-Agent', 'MC-Schedule-Updater/1.0')
+            
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                content = resp.read().decode('utf-8').strip()
+                if content:
+                    logger.info(f'通过 HTTP 获取到 {source.name} 的 VERSION: {content}')
+                    return content
+        except urllib.error.HTTPError as e:
+            logger.warning(f'获取远程 VERSION {source.name} HTTP 错误: {e.code}')
+        except urllib.error.URLError as e:
+            logger.warning(f'获取远程 VERSION {source.name} 网络错误: {e.reason}')
+        except Exception as e:
+            logger.warning(f'获取远程 VERSION {source.name} 异常: {e}')
+        return None
+
     def try_fetch_from_source(self, source: UpdateSource, branch: str) -> Tuple[bool, Optional[str]]:
         """
         从指定源获取远程commit
@@ -356,9 +380,24 @@ class Updater:
         if not remote_commit:
             raise UpdaterError('无法连接到任何更新源，请检查网络或配置代理')
         
+        # 判断是否是 git 仓库
+        is_git_repo = os.path.exists(os.path.join(self.project_root, '.git'))
+        
+        # 如果不是 git 仓库，用 VERSION 文件比较
+        remote_version = None
+        if not is_git_repo and semantic_version:
+            for source in self.update_sources:
+                remote_version = self._fetch_remote_version(source)
+                if remote_version:
+                    break
+        
         # 获取更新日志
         update_log = []
-        has_update = current_commit != remote_commit
+        
+        if is_git_repo:
+            has_update = current_commit != remote_commit
+        else:
+            has_update = (semantic_version != remote_version) if remote_version else False
         
         if has_update:
             self._run_git_command(['remote', 'rm', 'origin'])
@@ -370,10 +409,13 @@ class Updater:
             if log_output:
                 update_log = log_output.split('\n')
         
+        # 确定显示的最新版本
+        latest_display = remote_version if (not is_git_repo and remote_version) else (remote_commit[:7] if remote_commit else 'unknown')
+        
         return VersionInfo(
             current_version=display_version,
             current_branch=current_branch,
-            latest_version=remote_commit[:7] if remote_commit else 'unknown',
+            latest_version=latest_display,
             has_update=has_update,
             update_log=update_log,
             used_source=used_source_name,
