@@ -9280,6 +9280,9 @@ def upload_update():
         import shutil
         import zipfile
         
+        project_root = app.root_path
+        os.chdir(project_root)
+        
         if 'update_file' not in request.files:
             return jsonify({'ok': 0, 'msg': '请选择更新包文件'})
         
@@ -9290,7 +9293,7 @@ def upload_update():
         if not file.filename.lower().endswith('.zip'):
             return jsonify({'ok': 0, 'msg': '仅支持 ZIP 格式的更新包'})
         
-        temp_dir = 'update_temp'
+        temp_dir = os.path.join(project_root, 'update_temp')
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
         os.makedirs(temp_dir)
@@ -9311,10 +9314,8 @@ def upload_update():
         else:
             content_dir = temp_dir
         
-        project_root = os.path.dirname(os.path.abspath(__file__))
-        
-        exclude_dirs = ['logs', 'database.db', '__pycache__', '.git', 'node_modules']
-        exclude_files = ['update_temp', '.env', '.production_mode']
+        exclude_dirs = ['logs', 'database.db', '__pycache__', '.git', 'node_modules', 'update_temp']
+        exclude_files = ['.env', '.production_mode', '.secret_key']
         
         updated_files = []
         for root, dirs, files in os.walk(content_dir):

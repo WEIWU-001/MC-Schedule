@@ -1129,6 +1129,26 @@
             <div class="modal-btns">
                 <button class="modal-btn-cancel" onclick="closeUpdateModal()">取消</button>
                 <button class="modal-btn-ok" id="modalUpdateBtn" onclick="doUpdate()" style="background:#E74C3C;">🚀 执行更新</button>
+                <button class="modal-btn-ok" onclick="openUploadUpdateModal()" style="background:#3498db;">📦 上传更新包</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 上传更新包模态框 -->
+    <div class="modal" id="uploadUpdateModal">
+        <div class="modal-content" style="max-width:500px;">
+            <button class="modal-close-btn" onclick="closeUploadUpdateModal()">&times;</button>
+            <div class="modal-title">📦 上传更新包</div>
+            <div style="display: flex; flex-direction: column; gap:15px;">
+                <div style="background:#1a1a1a;padding:12px;border-radius:4px;border:1px dashed #3a3a3a;">
+                    <p style="color:#888;font-size:12px;margin-bottom:8px;">上传 ZIP 格式的更新包，将自动解压并覆盖项目文件</p>
+                    <input type="file" id="updateFileInput" accept=".zip" style="width:100%;color:#ddd;font-size:13px;">
+                </div>
+                <div id="uploadUpdateResult" style="min-height:24px;line-height:24px;font-size:13px;white-space:pre-wrap;overflow-wrap:break-word;"></div>
+            </div>
+            <div class="modal-btns">
+                <button class="modal-btn-cancel" onclick="closeUploadUpdateModal()">取消</button>
+                <button class="modal-btn-ok" onclick="uploadUpdate()" style="background:#3498db;">📤 开始上传</button>
             </div>
         </div>
     </div>
@@ -1536,6 +1556,68 @@
         function closeUpdateModal(){
             document.getElementById("updateModal").style.display = "none";
             document.getElementById("modalUpdateResult").innerText = "";
+        }
+        
+        function openUploadUpdateModal(){
+            document.getElementById("uploadUpdateModal").style.display = "flex";
+            document.getElementById("uploadUpdateResult").innerText = "";
+            document.getElementById("updateFileInput").value = "";
+        }
+        
+        function closeUploadUpdateModal(){
+            document.getElementById("uploadUpdateModal").style.display = "none";
+            document.getElementById("uploadUpdateResult").innerText = "";
+        }
+        
+        async function uploadUpdate(){
+            const fileInput = document.getElementById("updateFileInput");
+            const resultDiv = document.getElementById("uploadUpdateResult");
+            
+            if(!fileInput.files || fileInput.files.length === 0){
+                resultDiv.innerText = "请选择ZIP格式的更新包文件";
+                resultDiv.style.color = "#E74C3C";
+                return;
+            }
+            
+            const file = fileInput.files[0];
+            if(!file.name.toLowerCase().endsWith('.zip')){
+                resultDiv.innerText = "仅支持ZIP格式的更新包";
+                resultDiv.style.color = "#E74C3C";
+                return;
+            }
+            
+            if(!confirm(`确定要上传更新包 "${file.name}" 吗？\n\n此操作将覆盖项目文件，请确保更新包来源可靠。`)){
+                return;
+            }
+            
+            resultDiv.innerText = "⏳ 上传中...";
+            resultDiv.style.color = "#42C9D8";
+            
+            const formData = new FormData();
+            formData.append("update_file", file);
+            
+            try{
+                const res = await fetch("/admin/upload_update", {
+                    method: "POST",
+                    body: formData
+                });
+                const data = await res.json();
+                
+                if(data.ok === 1){
+                    resultDiv.innerText = `✅ ${data.msg}\n\n更新文件数: ${data.updated_files}`;
+                    resultDiv.style.color = "#2ECC71";
+                    
+                    if(data.files && data.files.length > 0){
+                        resultDiv.innerText += "\n\n更新的文件:\n" + data.files.join("\n");
+                    }
+                } else {
+                    resultDiv.innerText = `❌ ${data.msg}`;
+                    resultDiv.style.color = "#E74C3C";
+                }
+            } catch(e){
+                resultDiv.innerText = `❌ 上传失败: ${e}`;
+                resultDiv.style.color = "#E74C3C";
+            }
         }
         
         async function doUpdate(){
