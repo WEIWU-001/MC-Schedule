@@ -13,6 +13,9 @@ import shutil
 import zipfile
 import tempfile
 import logging
+import json
+import urllib.request
+import urllib.error
 from typing import Optional, Dict, List, Tuple, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -209,6 +212,32 @@ class Updater:
                 pass
         return None
     
+    def _fetch_via_api(self, source: UpdateSource, branch: str) -> Optional[str]:
+        """通过 HTTP API 获取远程 commit（git ls-remote 的备选方案）"""
+        try:
+            if source.id == 'gitee' or 'gitee.com' in self.remote_repo_url:
+                api_url = f'https://gitee.com/api/v5/repos/weiwu001/MC-Schedule/commits/{branch}'
+            else:
+                api_url = f'https://api.github.com/repos/WEIWU-001/MC-Schedule/commits/{branch}'
+            
+            req = urllib.request.Request(api_url)
+            req.add_header('User-Agent', 'MC-Schedule-Updater/1.0')
+            req.add_header('Accept', 'application/json')
+            
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+                sha = data.get('sha')
+                if sha:
+                    logger.info(f'通过 API 获取到 {source.name} 的 commit: {sha[:7]}')
+                    return sha
+        except urllib.error.HTTPError as e:
+            logger.warning(f'API 请求 {source.name} HTTP 错误: {e.code}')
+        except urllib.error.URLError as e:
+            logger.warning(f'API 请求 {source.name} 网络错误: {e.reason}')
+        except Exception as e:
+            logger.warning(f'API 请求 {source.name} 异常: {e}')
+        return None
+
     def try_fetch_from_source(self, source: UpdateSource, branch: str) -> Tuple[bool, Optional[str]]:
         """
         从指定源获取远程commit
@@ -217,10 +246,8 @@ class Updater:
             (success, remote_commit)
         """
         if source.type == 'direct':
-            # Gitee直连
             repo_url = self.remote_repo_url
         elif source.type == 'mirror' and source.url:
-            # 镜像代理
             repo_url = self.remote_repo_url.replace('https://github.com', source.url)
         else:
             return False, None
@@ -242,7 +269,13 @@ class Updater:
                     return True, remote_commit
             
             if attempt < self.max_retries - 1:
-                time.sleep(1)  # 重试前等待
+                time.sleep(1)
+        
+        # git ls-remote 失败，尝试 HTTP API 备选方案
+        logger.info(f'git ls-remote {source.name} 失败，尝试 API 方式')
+        api_commit = self._fetch_via_api(source, branch)
+        if api_commit:
+            return True, api_commit
         
         return False, None
     
