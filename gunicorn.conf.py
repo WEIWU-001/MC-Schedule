@@ -1,6 +1,8 @@
 # ==================== Gunicorn 配置文件 ====================
 # 使用方式: gunicorn -c gunicorn.conf.py wsgi:app
 
+import os
+
 # 工作进程数（建议设置为 CPU核心数 * 2 + 1）
 workers = 4
 
@@ -19,9 +21,13 @@ keepalive = 60
 # 进程名称
 proc_name = 'mc-schedule'
 
+# 创建日志目录
+logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+os.makedirs(logs_dir, exist_ok=True)
+
 # 日志配置
-accesslog = 'logs/gunicorn_access.log'
-errorlog = 'logs/gunicorn_error.log'
+accesslog = os.path.join(logs_dir, 'gunicorn_access.log')
+errorlog = os.path.join(logs_dir, 'gunicorn_error.log')
 loglevel = 'info'
 
 # 访问日志格式
