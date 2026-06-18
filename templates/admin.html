@@ -212,6 +212,10 @@
             <span class="nav-icon">📊</span> 数据管理
         </div>
         
+        <div class="nav-item" data-section="production" onclick="showSection('production')">
+            <span class="nav-icon">🚀</span> 生产模式
+        </div>
+        
         <div class="nav-item" data-section="settings" onclick="showSection('settings')">
             <span class="nav-icon">⚙️</span> 管理员设置
         </div>
@@ -665,6 +669,37 @@
                     <button onclick="saveMaintenanceMode()" style="background:#2ECC71;border:none;padding:8px 20px;border-radius:4px;color:#fff;cursor:pointer">保存维护设置</button>
                     <p id="maintenanceConfigResult" style="font-size:14px;color:#2ECC71;margin-top:10px"></p>
                 </div>
+            </div>
+            
+            <!-- 生产模式设置 -->
+            <div class="section" id="section-production">
+                <div class="list-title">🚀 生产模式设置</div>
+                <p class="tip">开启生产模式后，网站将以生产环境配置运行（需要重启服务器生效）</p>
+                <div style="background:var(--bg-card);padding:20px;border-radius:8px;margin-bottom:20px;">
+                    <div style="display:flex;align-items:center;gap:15px;margin-bottom:15px">
+                        <label style="margin:0;font-size:14px">当前模式：</label>
+                        <span id="productionModeLabel" style="font-size:14px;color:#888;font-weight:bold;">加载中...</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:15px;margin-bottom:15px">
+                        <label style="margin:0;font-size:14px">启用生产模式：</label>
+                        <label class="switch">
+                            <input type="checkbox" id="productionModeSwitch" onchange="toggleProductionMode()">
+                            <span class="switch-slider"></span>
+                        </label>
+                        <span id="productionModeStatusLabel" style="font-size:14px;color:#888">已关闭</span>
+                    </div>
+                    <div style="background:#2a2a4a;padding:12px;border-radius:4px;border-left:3px solid #F39C12;">
+                        <p style="margin:0;font-size:13px;color:#ccc;">⚠️ <strong>生产模式说明：</strong></p>
+                        <ul style="margin:8px 0 0 20px;font-size:12px;color:#888;">
+                            <li>启用HTTPS安全Cookie</li>
+                            <li>配置CORS域名白名单</li>
+                            <li>启用更严格的错误处理</li>
+                            <li>禁用调试信息显示</li>
+                        </ul>
+                    </div>
+                </div>
+                <button onclick="saveProductionMode()" style="background:#E74C3C;border:none;padding:8px 20px;border-radius:4px;color:#fff;cursor:pointer">💾 保存并重启服务器</button>
+                <p id="productionModeResult" style="font-size:14px;color:#2ECC71;margin-top:10px"></p>
             </div>
             
             <!-- 违规记录 -->
@@ -1215,6 +1250,7 @@
             'feedback': '用户反馈',
             'security': '安全管理',
             'data': '数据管理',
+            'production': '生产模式',
             'settings': '管理员设置',
             'profile': '个人信息'
         };
@@ -1861,6 +1897,10 @@
             // 切换到设置页面时加载维护模式状态
             if(sectionId === 'settings'){
                 loadMaintenanceMode();
+            }
+            // 切换到生产模式页面时加载生产模式状态
+            if(sectionId === 'production'){
+                loadProductionMode();
             }
             // 切换到数据管理页面时加载统计数据
             if(sectionId === 'data'){
@@ -2752,6 +2792,72 @@
                 loadMaintenanceMode();
             }
         });
+        
+        // ========== 生产模式设置 ==========
+        async function loadProductionMode(){
+            try{
+                const res = await fetch("/admin/get_production_mode",{
+                    method:"GET"
+                });
+                const data = await res.json();
+                if(data.ok === 1){
+                    const checkbox = document.getElementById("productionModeSwitch");
+                    const label = document.getElementById("productionModeLabel");
+                    const statusLabel = document.getElementById("productionModeStatusLabel");
+                    
+                    checkbox.checked = data.production_mode;
+                    label.textContent = data.production_mode ? "生产环境" : "开发环境";
+                    label.style.color = data.production_mode ? "#E74C3C" : "#2ECC71";
+                    statusLabel.textContent = data.production_mode ? "已开启" : "已关闭";
+                    statusLabel.style.color = data.production_mode ? "#E74C3C" : "#888";
+                }
+            }catch(e){
+                console.error("加载生产模式状态失败:", e);
+            }
+        }
+        
+        // 切换生产模式开关（仅更新标签，不保存）
+        function toggleProductionMode(){
+            const checkbox = document.getElementById("productionModeSwitch");
+            const label = document.getElementById("productionModeStatusLabel");
+            label.textContent = checkbox.checked ? "已开启" : "已关闭";
+            label.style.color = checkbox.checked ? "#E74C3C" : "#888";
+        }
+        
+        // 保存生产模式设置
+        async function saveProductionMode(){
+            const checkbox = document.getElementById("productionModeSwitch");
+            const resultEl = document.getElementById("productionModeResult");
+            
+            const enabled = checkbox.checked;
+            
+            if(!confirm(`确定要${enabled ? '启用' : '禁用'}生产模式吗？\n\n${enabled ? '启用后需要重启服务器才能生效！' : '禁用后需要重启服务器才能生效！'}`)){
+                return;
+            }
+            
+            try{
+                const res = await fetch("/admin/set_production_mode",{
+                    method:"POST",
+                    headers:{"Content-Type":"application/json"},
+                    body:JSON.stringify({enabled: enabled})
+                });
+                const data = await res.json();
+                if(data.ok === 1){
+                    resultEl.textContent = data.msg + (data.restart_required ? " 请手动重启服务器！" : "");
+                    resultEl.style.color = "#2ECC71";
+                    setTimeout(() => resultEl.textContent = "", 5000);
+                    
+                    // 刷新状态显示
+                    loadProductionMode();
+                }else{
+                    resultEl.style.color = "#ff6b6b";
+                    resultEl.textContent = data.msg || "保存失败";
+                }
+            }catch(e){
+                resultEl.style.color = "#ff6b6b";
+                resultEl.textContent = "保存失败: " + e.message;
+            }
+        }
 
         let currentEditEmailIndex = null;
         let emailPoolData = [];
