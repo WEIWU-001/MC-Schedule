@@ -103,8 +103,8 @@
         .btn-reject{background:var(--danger);border:none;color:#fff;padding:5px 10px;border-radius:4px;cursor:pointer;margin-left:5px}
         
         /* 模态框 */
-        .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);justify-content:center;align-items:center;z-index:1000}
-        .modal-content{background:var(--bg-card);padding:25px;border-radius:8px;min-width:350px;position:relative;border:1px solid var(--border)}
+        .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);justify-content:center;align-items:center;z-index:1000;overflow-y:auto}
+        .modal-content{background:var(--bg-card);padding:25px;border-radius:8px;min-width:350px;max-height:85vh;overflow-y:auto;position:relative;border:1px solid var(--border);margin:auto}
         .modal-close-btn{position:absolute;top:10px;right:15px;background:none;border:none;color:var(--text-secondary);font-size:24px;cursor:pointer;line-height:1;padding:0;width:30px;height:30px;display:flex;align-items:center;justify-content:center}
         .modal-close-btn:hover{color:var(--text-primary)}
         .modal-title{font-size:18px;color:var(--accent);margin-bottom:15px}
@@ -1056,31 +1056,75 @@
     
     <!-- 更新检查模态框 -->
     <div class="modal" id="updateModal">
-        <div class="modal-content" style="max-width:500px;">
+        <div class="modal-content" style="max-width:650px;width:90%;">
             <button class="modal-close-btn" onclick="closeUpdateModal()">&times;</button>
             <div class="modal-title">🔄 系统更新</div>
-            <div style="display: flex; flex-direction: column; gap:15px;">
-                <div style="display:flex;gap:20px;">
+            <div style="display: flex; flex-direction: column; gap:12px;">
+                <div style="display:flex;gap:25px;flex-wrap:wrap;">
                     <div>
-                        <span style="color:#888;">当前版本：</span>
-                        <span style="color:#42C9D8;font-weight:bold;" id="modalCurrentVersion">-</span>
+                        <span style="color:#888;font-size:13px;">当前版本：</span>
+                        <span style="color:#42C9D8;font-weight:bold;font-size:14px;" id="modalCurrentVersion">-</span>
                     </div>
                     <div>
-                        <span style="color:#888;">最新版本：</span>
-                        <span style="color:#2ECC71;font-weight:bold;" id="modalLatestVersion">-</span>
+                        <span style="color:#888;font-size:13px;">最新版本：</span>
+                        <span style="color:#2ECC71;font-weight:bold;font-size:14px;" id="modalLatestVersion">-</span>
                     </div>
                     <div>
-                        <span style="color:#888;">分支：</span>
-                        <span style="color:#9B59B6;font-weight:bold;" id="modalCurrentBranch">-</span>
+                        <span style="color:#888;font-size:13px;">分支：</span>
+                        <span style="color:#9B59B6;font-weight:bold;font-size:14px;" id="modalCurrentBranch">-</span>
                     </div>
                 </div>
                 
-                <div style="background:#1a1a1a;border-radius:4px;padding:10px;max-height:200px;overflow-y:auto;">
-                    <p style="color:#888;font-size:12px;margin-bottom:10px;">更新日志：</p>
+                <div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                        <span style="color:#888;font-size:13px;">选择更新源：</span>
+                        <button onclick="testUpdateSources()" style="padding:3px 10px;border-radius:4px;background:#2a2a2a;border:1px solid #3a3a3a;color:#aaa;cursor:pointer;font-size:11px;">测试代理连通性</button>
+                    </div>
+                    <div id="updateSourceList" style="display:flex;flex-direction:column;gap:6px;">
+                        <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#1a1a1a;border-radius:4px;cursor:pointer;transition:background 0.2s;" onmouseover="this.style.background='#222'" onmouseout="this.style.background='#1a1a1a'">
+                            <input type="radio" name="updateSource" value="" checked style="width:14px;height:14px;accent-color:#42C9D8;">
+                            <span style="color:#ddd;font-size:13px;flex:1;">自动选择（推荐）</span>
+                            <span class="source-status" data-source="auto" style="color:#888;font-size:11px;">--</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#1a1a1a;border-radius:4px;cursor:pointer;transition:background 0.2s;" onmouseover="this.style.background='#222'" onmouseout="this.style.background='#1a1a1a'">
+                            <input type="radio" name="updateSource" value="github" style="width:14px;height:14px;accent-color:#42C9D8;">
+                            <span style="color:#ddd;font-size:13px;flex:1;">GitHub 官方</span>
+                            <span class="source-status" data-source="github" style="color:#888;font-size:11px;">--</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#1a1a1a;border-radius:4px;cursor:pointer;transition:background 0.2s;" onmouseover="this.style.background='#222'" onmouseout="this.style.background='#1a1a1a'">
+                            <input type="radio" name="updateSource" value="ghproxy" style="width:14px;height:14px;accent-color:#42C9D8;">
+                            <span style="color:#ddd;font-size:13px;flex:1;">GHProxy</span>
+                            <span class="source-status" data-source="ghproxy" style="color:#888;font-size:11px;">--</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#1a1a1a;border-radius:4px;cursor:pointer;transition:background 0.2s;" onmouseover="this.style.background='#222'" onmouseout="this.style.background='#1a1a1a'">
+                            <input type="radio" name="updateSource" value="moeyy" style="width:14px;height:14px;accent-color:#42C9D8;">
+                            <span style="color:#ddd;font-size:13px;flex:1;">Moeyy GitHub</span>
+                            <span class="source-status" data-source="moeyy" style="color:#888;font-size:11px;">--</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#1a1a1a;border-radius:4px;cursor:pointer;transition:background 0.2s;" onmouseover="this.style.background='#222'" onmouseout="this.style.background='#1a1a1a'">
+                            <input type="radio" name="updateSource" value="fastgit" style="width:14px;height:14px;accent-color:#42C9D8;">
+                            <span style="color:#ddd;font-size:13px;flex:1;">FastGit</span>
+                            <span class="source-status" data-source="fastgit" style="color:#888;font-size:11px;">--</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#1a1a1a;border-radius:4px;cursor:pointer;transition:background 0.2s;" onmouseover="this.style.background='#222'" onmouseout="this.style.background='#1a1a1a'">
+                            <input type="radio" name="updateSource" value="gitclone" style="width:14px;height:14px;accent-color:#42C9D8;">
+                            <span style="color:#ddd;font-size:13px;flex:1;">GitClone</span>
+                            <span class="source-status" data-source="gitclone" style="color:#888;font-size:11px;">--</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#1a1a1a;border-radius:4px;cursor:pointer;transition:background 0.2s;" onmouseover="this.style.background='#222'" onmouseout="this.style.background='#1a1a1a'">
+                            <input type="radio" name="updateSource" value="gitee" style="width:14px;height:14px;accent-color:#42C9D8;">
+                            <span style="color:#ddd;font-size:13px;flex:1;">Gitee</span>
+                            <span class="source-status" data-source="gitee" style="color:#888;font-size:11px;">--</span>
+                        </label>
+                    </div>
+                </div>
+                
+                <div style="background:#1a1a1a;border-radius:4px;padding:10px;max-height:150px;overflow-y:auto;">
+                    <p style="color:#888;font-size:11px;margin-bottom:8px;">更新日志：</p>
                     <ul id="modalUpdateLogList"></ul>
                 </div>
                 
-                <div id="modalUpdateResult" style="height:20px;line-height:20px;font-size:14px;"></div>
+                <div id="modalUpdateResult" style="min-height:24px;line-height:24px;font-size:13px;white-space:pre-wrap;overflow-wrap:break-word;"></div>
             </div>
             <div class="modal-btns">
                 <button class="modal-btn-cancel" onclick="closeUpdateModal()">取消</button>
@@ -1371,8 +1415,32 @@
             btn.innerText = "⏳ 检查中...";
             btn.disabled = true;
             
+            // 先打开模态框，显示加载状态
+            document.getElementById("modalCurrentVersion").innerText = "--";
+            document.getElementById("modalLatestVersion").innerText = "⏳ 检查中...";
+            document.getElementById("modalCurrentBranch").innerText = "--";
+            const logList = document.getElementById("modalUpdateLogList");
+            logList.innerHTML = "";
+            const loadingLi = document.createElement("li");
+            loadingLi.style.color = "#888";
+            loadingLi.style.fontSize = "12px";
+            loadingLi.innerText = "正在检查更新，请稍候...";
+            logList.appendChild(loadingLi);
+            document.getElementById("modalUpdateResult").innerText = "";
+            document.getElementById("updateModal").style.display = "flex";
+            
             try{
-                const res = await fetch("/admin/check_update", {method: "POST"});
+                const selectedSource = document.querySelector('input[name="updateSource"]:checked');
+                const source_id = selectedSource ? selectedSource.value : "";
+                const formData = new FormData();
+                if(source_id){
+                    formData.append("source_id", source_id);
+                }
+                
+                const res = await fetch("/admin/check_update", {
+                    method: "POST",
+                    body: formData
+                });
                 const data = await res.json();
                 
                 if(data.ok === 1){
@@ -1383,20 +1451,53 @@
                     // 更新版本显示
                     versionInfo.innerText = `v${updateData.current_version}`;
                     
+                    // 更新模态框内容
+                    document.getElementById("modalCurrentVersion").innerText = updateData.current_version;
+                    document.getElementById("modalLatestVersion").innerText = updateData.latest_version;
+                    document.getElementById("modalCurrentBranch").innerText = updateData.current_branch;
+                    
+                    // 更新更新日志
+                    logList.innerHTML = "";
+                    if(updateData.update_log && updateData.update_log.length > 0){
+                        updateData.update_log.forEach(log => {
+                            const li = document.createElement("li");
+                            li.style.color = "#ddd";
+                            li.style.fontSize = "12px";
+                            li.style.padding = "4px 0";
+                            li.innerText = log;
+                            logList.appendChild(li);
+                        });
+                    } else {
+                        const li = document.createElement("li");
+                        li.style.color = "#888";
+                        li.style.fontSize = "12px";
+                        li.innerText = "暂无更新日志";
+                        logList.appendChild(li);
+                    }
+                    
                     if(updateData.has_update){
                         updateBadge.style.display = "inline-block";
-                        // 打开更新详情模态框
-                        openUpdateModal(updateData);
+                        document.getElementById("modalUpdateResult").innerText = "发现新版本，请点击下方按钮执行更新";
+                        document.getElementById("modalUpdateResult").style.color = "#2ECC71";
                     } else {
                         updateBadge.style.display = "none";
-                        alert("当前已是最新版本！");
+                        document.getElementById("modalUpdateResult").innerText = "当前已是最新版本";
+                        document.getElementById("modalUpdateResult").style.color = "#42C9D8";
                     }
                 } else {
-                    alert(data.msg || "检查更新失败");
+                    let errorMsg = data.msg || "检查更新失败";
+                    if(data.detail) {
+                        errorMsg += "\n\n" + data.detail;
+                    }
+                    document.getElementById("modalLatestVersion").innerText = "❌ 检查失败";
+                    document.getElementById("modalUpdateResult").innerText = errorMsg;
+                    document.getElementById("modalUpdateResult").style.color = "#E74C3C";
                 }
             } catch(e){
                 console.error("检查更新失败:", e);
-                alert("检查更新失败: " + e);
+                document.getElementById("modalLatestVersion").innerText = "❌ 检查失败";
+                document.getElementById("modalUpdateResult").innerText = "检查更新失败: " + e;
+                document.getElementById("modalUpdateResult").style.color = "#E74C3C";
             } finally {
                 btn.innerText = originalText;
                 btn.disabled = false;
@@ -1429,7 +1530,7 @@
                 logList.appendChild(li);
             }
             
-            document.getElementById("updateModal").style.display = "block";
+            document.getElementById("updateModal").style.display = "flex";
         }
         
         function closeUpdateModal(){
@@ -1448,7 +1549,17 @@
             btn.disabled = true;
             
             try{
-                const res = await fetch("/admin/do_update", {method: "POST"});
+                const selectedSource = document.querySelector('input[name="updateSource"]:checked');
+                const source_id = selectedSource ? selectedSource.value : "";
+                const formData = new FormData();
+                if(source_id){
+                    formData.append("source_id", source_id);
+                }
+                
+                const res = await fetch("/admin/do_update", {
+                    method: "POST",
+                    body: formData
+                });
                 const data = await res.json();
                 
                 const resultDiv = document.getElementById("modalUpdateResult");
@@ -1480,6 +1591,75 @@
                 console.error("更新失败:", e);
                 document.getElementById("modalUpdateResult").innerText = "更新失败: " + e;
                 document.getElementById("modalUpdateResult").style.color = "#E74C3C";
+            } finally {
+                btn.innerText = originalText;
+                btn.disabled = false;
+            }
+        }
+        
+        async function testUpdateSources(){
+            const btn = document.querySelector('button[onclick="testUpdateSources()"]');
+            const originalText = btn.innerText;
+            btn.innerText = "⏳ 测试中...";
+            btn.disabled = true;
+            
+            // 重置所有状态（auto显示为自动检测）
+            document.querySelectorAll('.source-status').forEach(el => {
+                if(el.dataset.source === 'auto'){
+                    el.innerText = "自动检测";
+                    el.style.color = "#42C9D8";
+                } else {
+                    el.innerText = "⏳ 测试中...";
+                    el.style.color = "#888";
+                }
+            });
+            
+            try{
+                const res = await fetch("/admin/test_update_sources", {method: "POST"});
+                const data = await res.json();
+                
+                if(data.ok === 1){
+                    const results = data.results;
+                    
+                    results.forEach(result => {
+                        const statusEl = document.querySelector(`.source-status[data-source="${result.id}"]`);
+                        if(statusEl){
+                            if(result.success){
+                                statusEl.innerText = `✅ ${result.latency}ms`;
+                                statusEl.style.color = "#2ECC71";
+                            } else {
+                                statusEl.innerText = `❌ ${result.error || "失败"}`;
+                                statusEl.style.color = "#E74C3C";
+                            }
+                        }
+                    });
+                    
+                    // 自动选择最快的可用源
+                    const fastest = results.find(r => r.success);
+                    if(fastest){
+                        const radio = document.querySelector(`input[name="updateSource"][value="${fastest.id}"]`);
+                        if(radio){
+                            radio.checked = true;
+                        }
+                    }
+                } else {
+                    alert(data.msg || "测试失败");
+                    document.querySelectorAll('.source-status').forEach(el => {
+                        if(el.dataset.source !== 'auto'){
+                            el.innerText = "❌ 测试失败";
+                            el.style.color = "#E74C3C";
+                        }
+                    });
+                }
+            } catch(e){
+                console.error("测试更新源失败:", e);
+                alert("测试失败: " + e);
+                document.querySelectorAll('.source-status').forEach(el => {
+                    if(el.dataset.source !== 'auto'){
+                        el.innerText = "❌ 测试失败";
+                        el.style.color = "#E74C3C";
+                    }
+                });
             } finally {
                 btn.innerText = originalText;
                 btn.disabled = false;
@@ -2872,7 +3052,7 @@
         // ===================== 关键词导入功能 =====================
         
         function openImportModal() {
-            document.getElementById("importModal").style.display = "block";
+            document.getElementById("importModal").style.display = "flex";
         }
         
         function closeImportModal() {

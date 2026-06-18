@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_file
 from flask_mail import Mail, Message
+from functools import wraps
 import sqlite3
 import hashlib
 import random
@@ -13,6 +14,115 @@ import shutil
 import io
 import csv
 import bcrypt
+
+# ===================== 数据库连接池 =====================
+# 保存原始连接函数（在创建连接池之前）
+original_sqlite_connect = sqlite3.connect
+
+class ConnectionWrapper:
+    """包装 sqlite3.Connection，重写 close 方法"""
+    def __init__(self, conn, pool):
+        self._conn = conn
+        self._pool = pool
+    
+    def __getattr__(self, name):
+        """委托所有属性访问到原始连接对象"""
+        return getattr(self._conn, name)
+    
+    def close(self):
+        """重写 close，将连接放回连接池而不是关闭"""
+        self._pool.release_connection(self._conn)
+
+class DatabaseConnectionPool:
+    def __init__(self, db_path='database.db', max_connections=10, timeout=5):
+        """
+        初始化数据库连接池
+        :param db_path: 数据库文件路径
+        :param max_connections: 最大连接数
+        :param timeout: 获取连接超时时间（秒）
+        """
+        import threading
+        self.db_path = db_path
+        self.max_connections = max_connections
+        self.timeout = timeout
+        self.pool = []
+        self.lock = threading.Lock()
+        self.connection_count = 0
+    
+    def _create_connection(self):
+        """创建新的数据库连接（使用原始连接函数避免递归）"""
+        conn = original_sqlite_connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+    
+    def get_connection(self):
+        """从连接池获取连接"""
+        with self.lock:
+            if self.pool:
+                conn = self.pool.pop()
+                return ConnectionWrapper(conn, self)
+            
+            if self.connection_count < self.max_connections:
+                conn = self._create_connection()
+                self.connection_count += 1
+                return ConnectionWrapper(conn, self)
+        
+        import time
+        start_time = time.time()
+        while time.time() - start_time < self.timeout:
+            time.sleep(0.1)
+            with self.lock:
+                if self.pool:
+                    conn = self.pool.pop()
+                    return ConnectionWrapper(conn, self)
+        
+        raise Exception(f"获取数据库连接超时（{self.timeout}秒），最大连接数: {self.max_connections}")
+    
+    def release_connection(self, conn):
+        """将连接放回连接池"""
+        try:
+            with self.lock:
+                if len(self.pool) < self.max_connections:
+                    self.pool.append(conn)
+                else:
+                    conn.close()
+                    self.connection_count -= 1
+        except:
+            try:
+                conn.close()
+            except:
+                pass
+            with self.lock:
+                self.connection_count -= 1
+    
+    def close_all(self):
+        """关闭所有连接"""
+        with self.lock:
+            for conn in self.pool:
+                try:
+                    conn.close()
+                except:
+                    pass
+            self.pool = []
+            self.connection_count = 0
+
+# 初始化连接池
+db_pool = DatabaseConnectionPool(max_connections=10)
+
+# 包装 sqlite3.connect，使其使用连接池
+def pool_connect(db_path, *args, **kwargs):
+    """包装后的连接函数，自动使用连接池"""
+    if db_path == 'database.db':
+        return db_pool.get_connection()
+    return original_sqlite_connect(db_path, *args, **kwargs)
+
+# 替换 sqlite3.connect
+sqlite3.connect = pool_connect
+
+
+# 服务器状态缓存
+server_status_cache = {}
+SERVER_STATUS_CACHE_DURATION = 10 * 60  # 10分钟缓存
 
 
 # 导入腾讯云 SDK
@@ -38,56 +148,97 @@ else:
 
 def setup_logging():
     """配置日志系统"""
-    # 创建日志目录
     log_dir = 'logs'
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
     
-    # 日志格式
-    log_format = '%(asctime)s [%(levelname)s] %(name)s - %(message)s'
     date_format = '%Y-%m-%d %H:%M:%S'
     
-    # 创建格式化器
-    formatter = logging.Formatter(log_format, datefmt=date_format)
-    
-    # 获取根日志器
+    # 创建根日志器
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
+    
+    # 移除已有的处理器（防止重复）
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    # 标准日志格式
+    standard_formatter = logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(name)s - %(message)s',
+        datefmt=date_format
+    )
     
     # 控制台处理器
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
+    console_handler.setFormatter(standard_formatter)
+    logger.addHandler(console_handler)
     
-    # 文件处理器（带轮转）
+    # 应用日志文件
     file_handler = RotatingFileHandler(
         os.path.join(log_dir, 'app.log'),
-        maxBytes=10*1024*1024,  # 10MB
+        maxBytes=10*1024*1024,
         backupCount=5,
         encoding='utf-8'
     )
     file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(formatter)
+    file_handler.setFormatter(standard_formatter)
+    logger.addHandler(file_handler)
     
-    # 错误日志文件处理器
+    # 错误日志文件
     error_handler = RotatingFileHandler(
         os.path.join(log_dir, 'error.log'),
-        maxBytes=10*1024*1024,  # 10MB
+        maxBytes=10*1024*1024,
         backupCount=5,
         encoding='utf-8'
     )
     error_handler.setLevel(logging.ERROR)
-    error_handler.setFormatter(formatter)
-    
-    # 添加处理器
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
+    error_handler.setFormatter(standard_formatter)
     logger.addHandler(error_handler)
     
-    return logger
+    # ==================== 访问日志 ====================
+    access_logger = logging.getLogger('access')
+    access_logger.setLevel(logging.INFO)
+    access_logger.propagate = False
+    
+    access_formatter = logging.Formatter(
+        '%(asctime)s [ACCESS] %(remote_addr)s %(method)s %(path)s %(status)s %(duration)sms %(user_id)s %(user_agent)s',
+        datefmt=date_format
+    )
+    
+    access_handler = RotatingFileHandler(
+        os.path.join(log_dir, 'access.log'),
+        maxBytes=20*1024*1024,
+        backupCount=10,
+        encoding='utf-8'
+    )
+    access_handler.setFormatter(access_formatter)
+    access_logger.addHandler(access_handler)
+    
+    # ==================== 安全日志 ====================
+    security_logger = logging.getLogger('security')
+    security_logger.setLevel(logging.INFO)
+    security_logger.propagate = False
+    
+    security_formatter = logging.Formatter(
+        '%(asctime)s [SECURITY] %(levelname)s %(remote_addr)s %(action)s %(target)s %(user_id)s %(detail)s',
+        datefmt=date_format
+    )
+    
+    security_handler = RotatingFileHandler(
+        os.path.join(log_dir, 'security.log'),
+        maxBytes=20*1024*1024,
+        backupCount=10,
+        encoding='utf-8'
+    )
+    security_handler.setFormatter(security_formatter)
+    security_logger.addHandler(security_handler)
+    
+    # 返回主日志器和专用日志器
+    return logger, access_logger, security_logger
 
 # 初始化日志
-logger = setup_logging()
+logger, access_logger, security_logger = setup_logging()
 
 # ===================== 权限常量 =====================
 ROLE_NORMAL = 0       # 普通成员
@@ -95,6 +246,58 @@ ROLE_OP = 1          # 档主
 ROLE_TRUSTED_OP = 2  # 信用档主（免审核，放宽限制）
 ROLE_ADMIN = 3       # 普通管理员（不能设置管理员/信用档主）
 ROLE_SUPER_ADMIN = 4 # 最高管理员（服主）
+
+# ===================== 日志记录函数 =====================
+def log_access(remote_addr, method, path, status, duration_ms, user_id, user_agent):
+    """记录访问日志"""
+    access_logger.info(
+        '',
+        extra={
+            'remote_addr': remote_addr,
+            'method': method,
+            'path': path,
+            'status': status,
+            'duration': duration_ms,
+            'user_id': user_id or '-',
+            'user_agent': user_agent[:200] if user_agent else '-'
+        }
+    )
+
+def log_security(remote_addr, action, target, user_id=None, detail=None, level='INFO'):
+    """记录安全日志"""
+    if level == 'ERROR':
+        security_logger.error(
+            '',
+            extra={
+                'remote_addr': remote_addr,
+                'action': action,
+                'target': target,
+                'user_id': user_id or '-',
+                'detail': detail or '-'
+            }
+        )
+    elif level == 'WARNING':
+        security_logger.warning(
+            '',
+            extra={
+                'remote_addr': remote_addr,
+                'action': action,
+                'target': target,
+                'user_id': user_id or '-',
+                'detail': detail or '-'
+            }
+        )
+    else:
+        security_logger.info(
+            '',
+            extra={
+                'remote_addr': remote_addr,
+                'action': action,
+                'target': target,
+                'user_id': user_id or '-',
+                'detail': detail or '-'
+            }
+        )
 # ======================================================================
 
 # ===================== 邮箱池配置 =====================
@@ -280,10 +483,14 @@ def init_db(admin_username, admin_password, admin_email):
     c.execute('''CREATE TABLE IF NOT EXISTS schedules
                   (id INTEGER PRIMARY KEY AUTOINCREMENT,
                    year INTEGER, month INTEGER, day INTEGER,
+                   type TEXT DEFAULT 'short',
+                   end_year INTEGER, end_month INTEGER, end_day INTEGER,
                    time TEXT, server_id TEXT, 
                    ip TEXT, contact_type TEXT, contact_value TEXT,
                    keep INTEGER DEFAULT 1,
                    approved INTEGER DEFAULT 0,
+                   active_status INTEGER DEFAULT 1,
+                   mc_status_check INTEGER DEFAULT 0,
                    created_by TEXT,
                    created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
     
@@ -437,6 +644,12 @@ def init_db(admin_username, admin_password, admin_email):
         c.execute("ALTER TABLE users ADD COLUMN violation_count INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    
+    # 检查并为用户表添加 is_banned 字段（如果不存在）
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
 
     # 系统配置表
     c.execute('''CREATE TABLE IF NOT EXISTS system_config
@@ -479,6 +692,68 @@ def init_db(admin_username, admin_password, admin_email):
                    content TEXT,
                    status INTEGER DEFAULT 0,
                    created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
+    
+    # ==================== 积分系统表 ====================
+    # 奖励表（管理员可自定义奖励）
+    c.execute('''CREATE TABLE IF NOT EXISTS rewards
+                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   title TEXT NOT NULL,
+                   description TEXT,
+                   points_required INTEGER NOT NULL DEFAULT 0,
+                   image_url TEXT,
+                   has_image INTEGER DEFAULT 0,
+                   stock INTEGER DEFAULT -1,
+                   sort_order INTEGER DEFAULT 0,
+                   enabled INTEGER DEFAULT 1,
+                   created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
+    
+    # 用户积分表
+    c.execute('''CREATE TABLE IF NOT EXISTS user_points
+                  (uid TEXT PRIMARY KEY,
+                   points INTEGER DEFAULT 0,
+                   total_earned INTEGER DEFAULT 0,
+                   total_spent INTEGER DEFAULT 0,
+                   last_checkin TEXT DEFAULT '',
+                   checkin_streak INTEGER DEFAULT 0,
+                   last_comment_reward TEXT DEFAULT '',
+                   updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                   FOREIGN KEY (uid) REFERENCES users(id))''')
+    
+    try:
+        c.execute('ALTER TABLE user_points ADD COLUMN last_checkin TEXT DEFAULT ''')
+    except:
+        pass
+    try:
+        c.execute('ALTER TABLE user_points ADD COLUMN checkin_streak INTEGER DEFAULT 0')
+    except:
+        pass
+    try:
+        c.execute('ALTER TABLE user_points ADD COLUMN last_comment_reward TEXT DEFAULT ''')
+    except:
+        pass
+    
+    # 积分交易记录表
+    c.execute('''CREATE TABLE IF NOT EXISTS point_transactions
+                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   uid TEXT,
+                   type TEXT,
+                   points INTEGER,
+                   description TEXT,
+                   related_id INTEGER,
+                   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                   FOREIGN KEY (uid) REFERENCES users(id))''')
+    
+    # 奖励兑换记录表
+    c.execute('''CREATE TABLE IF NOT EXISTS reward_claims
+                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   uid TEXT,
+                   reward_id INTEGER,
+                   points_spent INTEGER,
+                   status INTEGER DEFAULT 0,
+                   claim_data TEXT,
+                   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                   FOREIGN KEY (uid) REFERENCES users(id),
+                   FOREIGN KEY (reward_id) REFERENCES rewards(id))''')
     
     # 初始化默认配置：注册人数显示开关（默认关闭）
     c.execute("INSERT OR IGNORE INTO system_config (key, value) VALUES (?, ?)", 
@@ -523,6 +798,30 @@ def init_db(admin_username, admin_password, admin_email):
             c.execute("ALTER TABLE schedules ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP")
             print("已添加 created_at 字段")
         
+        if 'type' not in columns:
+            c.execute("ALTER TABLE schedules ADD COLUMN type TEXT DEFAULT 'short'")
+            print("已添加 type 字段")
+        
+        if 'end_year' not in columns:
+            c.execute("ALTER TABLE schedules ADD COLUMN end_year INTEGER")
+            print("已添加 end_year 字段")
+        
+        if 'end_month' not in columns:
+            c.execute("ALTER TABLE schedules ADD COLUMN end_month INTEGER")
+            print("已添加 end_month 字段")
+        
+        if 'end_day' not in columns:
+            c.execute("ALTER TABLE schedules ADD COLUMN end_day INTEGER")
+            print("已添加 end_day 字段")
+        
+        if 'active_status' not in columns:
+            c.execute("ALTER TABLE schedules ADD COLUMN active_status INTEGER DEFAULT 1")
+            print("已添加 active_status 字段")
+        
+        if 'mc_status_check' not in columns:
+            c.execute("ALTER TABLE schedules ADD COLUMN mc_status_check INTEGER DEFAULT 0")
+            print("已添加 mc_status_check 字段")
+        
         conn.commit()
     except Exception as e:
         print(f"数据库迁移提示: {e}")
@@ -556,8 +855,6 @@ def init_db(admin_username, admin_password, admin_email):
         conn.commit()
     except Exception as e:
         print(f"ip_blacklist 迁移提示: {e}")
-    
-    # 检查 op_applications 表是否有 add_qq 字段，有的话忽略（不影响功能）
     
     # 迁移旧版管理员(role=2)为最高管理员(role=4)
     try:
@@ -605,6 +902,8 @@ def init_db(admin_username, admin_password, admin_email):
         print(f"[敏感词] 加载失败: {e}")
     
     conn.close()
+    
+    load_sensitive_words()
 
 # ===================== 禁言和通知模块 =====================
 def is_user_muted(uid):
@@ -620,7 +919,7 @@ def is_user_muted(uid):
             conn.close()
             return False, None
         
-        # 再检查活跃的禁言记录
+        # 检查活跃的禁言记录
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         c.execute("""SELECT id, reason, muted_by, mute_type, mute_until, created_at 
                       FROM mutes 
@@ -628,9 +927,23 @@ def is_user_muted(uid):
                       ORDER BY created_at DESC LIMIT 1""", (uid,))
         mute_record = c.fetchone()
         
+        # 如果没有禁言记录，但有 is_muted=1，说明是旧数据，创建一个默认记录
         if not mute_record:
+            c.execute("""INSERT INTO mutes (uid, reason, muted_by, mute_type, mute_until) 
+                         VALUES (?, ?, ?, ?, ?)""", 
+                      (uid, "系统禁言（旧数据迁移）", "系统", 0, None))
+            conn.commit()
+            mute_id = c.lastrowid
+            mute_info = {
+                'id': mute_id,
+                'reason': "系统禁言（旧数据迁移）",
+                'muted_by': "系统",
+                'mute_type': '永久',
+                'mute_until': None,
+                'created_at': now
+            }
             conn.close()
-            return False, None
+            return True, mute_info
         
         mute_id, reason, muted_by, mute_type, mute_until, created_at = mute_record
         
@@ -712,6 +1025,204 @@ def send_notification_email(email, title, content):
         return False
 
 
+NOTIFICATION_SETTINGS = {
+    'welcome_notify': {
+        'name': '注册欢迎通知',
+        'description': '用户注册成功后的欢迎消息',
+        'default_inbox': True,
+        'default_email': False
+    },
+    'reservation_success': {
+        'name': '预约成功通知',
+        'description': '用户成功预约档期时的通知',
+        'default_inbox': True,
+        'default_email': True
+    },
+    'reservation_cancel': {
+        'name': '预约取消通知',
+        'description': '用户取消预约时的通知',
+        'default_inbox': True,
+        'default_email': False
+    },
+    'mute_notify': {
+        'name': '禁言通知',
+        'description': '用户被禁言时的通知',
+        'default_inbox': True,
+        'default_email': True
+    },
+    'unmute_notify': {
+        'name': '解除禁言通知',
+        'description': '用户被解除禁言时的通知',
+        'default_inbox': True,
+        'default_email': True
+    },
+    'penalty_notify': {
+        'name': '惩罚通知',
+        'description': '用户收到惩罚（警告、封禁等）时的通知',
+        'default_inbox': True,
+        'default_email': True
+    },
+    'violation_notify': {
+        'name': '违规提醒',
+        'description': '用户违规被检测到时的通知',
+        'default_inbox': True,
+        'default_email': False
+    },
+    'schedule_apply': {
+        'name': '档期申请通知',
+        'description': '档主提交新档期申请时通知管理员',
+        'default_inbox': True,
+        'default_email': True
+    },
+    'schedule_approve': {
+        'name': '档期审核结果通知',
+        'description': '档期审核通过或拒绝时通知档主',
+        'default_inbox': True,
+        'default_email': True
+    },
+    'schedule_delete': {
+        'name': '档期取消通知',
+        'description': '档期被取消时通知预约玩家',
+        'default_inbox': True,
+        'default_email': True
+    },
+    'op_apply': {
+        'name': '档主申请通知',
+        'description': '玩家申请成为档主时通知管理员',
+        'default_inbox': True,
+        'default_email': True
+    },
+    'op_approve': {
+        'name': '档主申请结果通知',
+        'description': '档主申请审核通过或拒绝时通知申请人',
+        'default_inbox': True,
+        'default_email': True
+    },
+    'reservation_reminder': {
+        'name': '预约提醒',
+        'description': '开服前提醒玩家',
+        'default_inbox': True,
+        'default_email': True
+    },
+    'system_notify': {
+        'name': '系统通知',
+        'description': '其他系统消息',
+        'default_inbox': True,
+        'default_email': False
+    },
+    'broadcast_notify': {
+        'name': '管理员广播',
+        'description': '管理员发送的全站广播消息',
+        'default_inbox': True,
+        'default_email': False
+    },
+    'schedule_update': {
+        'name': '档期修改通知',
+        'description': '档期信息修改时通知预约玩家',
+        'default_inbox': True,
+        'default_email': True
+    }
+}
+
+
+def get_notification_setting(key, channel='inbox'):
+    """获取通知设置"""
+    if key not in NOTIFICATION_SETTINGS:
+        return True
+    
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    try:
+        setting_key = f"notify_{key}_{channel}"
+        c.execute("SELECT value FROM system_config WHERE key = ?", (setting_key,))
+        row = c.fetchone()
+        conn.close()
+        
+        if row is not None:
+            return row[0] == '1'
+        
+        default = NOTIFICATION_SETTINGS[key].get(f'default_{channel}', True)
+        return default
+    except Exception as e:
+        conn.close()
+        print(f"[通知设置] 获取失败: {e}")
+        return NOTIFICATION_SETTINGS[key].get(f'default_{channel}', True)
+
+
+def save_notification_setting(key, channel, enabled):
+    """保存通知设置"""
+    if key not in NOTIFICATION_SETTINGS:
+        return False
+    
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    try:
+        setting_key = f"notify_{key}_{channel}"
+        c.execute("REPLACE INTO system_config (key, value) VALUES (?, ?)", 
+                  (setting_key, '1' if enabled else '0'))
+        conn.commit()
+        conn.close()
+        print(f"[通知设置] 已保存: {setting_key} = {enabled}")
+        return True
+    except Exception as e:
+        conn.close()
+        print(f"[通知设置] 保存失败: {e}")
+        return False
+
+
+def get_all_notification_settings():
+    """获取所有通知设置"""
+    result = {}
+    for key, info in NOTIFICATION_SETTINGS.items():
+        result[key] = {
+            'name': info['name'],
+            'description': info['description'],
+            'inbox': get_notification_setting(key, 'inbox'),
+            'email': get_notification_setting(key, 'email')
+        }
+    return result
+
+
+def send_notification(uid, title, content, notif_type='system'):
+    """统一发送通知（根据设置决定发送方式）"""
+    inbox_enabled = get_notification_setting(notif_type, 'inbox')
+    email_enabled = get_notification_setting(notif_type, 'email')
+    
+    if inbox_enabled:
+        create_inbox_notification(uid, title, content, notif_type)
+    
+    if email_enabled:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        try:
+            c.execute("SELECT email, verified FROM users WHERE id = ?", (uid,))
+            user = c.fetchone()
+            if user and user[0] and user[1] == 1:
+                send_notification_email(user[0], title, content)
+        except Exception as e:
+            print(f"[通知] 邮件发送失败: {e}")
+        finally:
+            conn.close()
+
+
+def create_inbox_notification(uid, title, content, notif_type='system'):
+    """仅创建站内通知"""
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    
+    try:
+        c.execute("""INSERT INTO notifications (uid, title, content, type) 
+                     VALUES (?, ?, ?, ?)""", (uid, title, content, notif_type))
+        conn.commit()
+        print(f"[通知] 已发送站内通知给用户 {uid}: {title}")
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"[通知] 创建站内通知失败: {e}")
+        conn.close()
+        return False
+
+
 def mute_user(target_uid, reason, muted_by, mute_type=0, mute_hours=0):
     """禁言用户"""
     conn = sqlite3.connect('database.db')
@@ -740,7 +1251,7 @@ def mute_user(target_uid, reason, muted_by, mute_type=0, mute_hours=0):
         notif_content = f"原因: {reason}\n操作人: {muted_by}"
         if mute_until:
             notif_content += f"\n解禁时间: {mute_until}"
-        create_notification(target_uid, notif_title, notif_content, 'mute')
+        send_notification(target_uid, notif_title, notif_content, 'mute_notify')
         
         print(f"[禁言] 用户 {target_uid} 已被禁言")
         conn.close()
@@ -758,8 +1269,7 @@ def unmute_user(target_uid, unmuted_by):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     try:
-        # 将用户的活跃禁言设置为不活跃，并记录解禁人
-        c.execute("UPDATE mutes SET active = 0, unmuted_by = ?, unmuted_at = ? WHERE uid = ? AND active = 1", 
+        c.execute("UPDATE penalties SET active = 0, lifted_by = ?, lifted_at = ? WHERE uid = ? AND penalty_type = 'mute' AND active = 1", 
                   (unmuted_by, now, target_uid))
         c.execute("UPDATE users SET is_muted = 0 WHERE id = ?", (target_uid,))
         
@@ -768,13 +1278,92 @@ def unmute_user(target_uid, unmuted_by):
         # 发送通知
         notif_title = "您已被解除禁言"
         notif_content = f"操作人: {unmuted_by}"
-        create_notification(target_uid, notif_title, notif_content, 'unmute')
+        send_notification(target_uid, notif_title, notif_content, 'unmute_notify')
         
         print(f"[禁言] 用户 {target_uid} 已被解禁")
         conn.close()
         return True
     except Exception as e:
         print(f"[禁言] 解禁失败: {e}")
+        conn.close()
+        return False
+
+
+def is_user_banned(uid):
+    """检查用户是否被封禁"""
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    
+    try:
+        c.execute("SELECT is_banned FROM users WHERE id = ?", (uid,))
+        result = c.fetchone()
+        conn.close()
+        return result is not None and result[0] == 1
+    except Exception as e:
+        print(f"[封禁] 检查失败: {e}")
+        conn.close()
+        return False
+
+
+def ban_user(target_uid, reason, banned_by, ban_type=0, ban_days=0):
+    """封禁用户"""
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    
+    try:
+        c.execute("UPDATE users SET is_banned = 1 WHERE id = ?", (target_uid,))
+        
+        ban_until = None
+        if ban_type == 1 and ban_days > 0:
+            ban_until_dt = datetime.now() + timedelta(days=ban_days)
+            ban_until = ban_until_dt.strftime("%Y-%m-%d %H:%M:%S")
+        
+        duration = None
+        if ban_type == 1 and ban_days > 0:
+            duration = f"{ban_days}天"
+        
+        issue_penalty(target_uid, 'ban' if ban_type == 0 else 'temporary_ban', reason, banned_by, duration)
+        
+        conn.commit()
+        
+        ban_duration_text = "永久封禁" if ban_type == 0 else f"限时封禁 {ban_days} 天"
+        notif_title = f"您已被 {ban_duration_text}"
+        notif_content = f"原因: {reason}\n操作人: {banned_by}"
+        if ban_until:
+            notif_content += f"\n解封时间: {ban_until}"
+        send_notification(target_uid, notif_title, notif_content, 'penalty_notify')
+        
+        print(f"[封禁] 用户 {target_uid} 已被封禁")
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"[封禁] 失败: {e}")
+        conn.close()
+        return False
+
+
+def unban_user(target_uid, unbanned_by):
+    """解封用户"""
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    try:
+        c.execute("UPDATE penalties SET active = 0, lifted_by = ?, lifted_at = ? WHERE uid = ? AND penalty_type IN ('ban', 'temporary_ban') AND active = 1", 
+                  (unbanned_by, now, target_uid))
+        c.execute("UPDATE users SET is_banned = 0 WHERE id = ?", (target_uid,))
+        
+        conn.commit()
+        
+        notif_title = "您已被解除封禁"
+        notif_content = f"操作人: {unbanned_by}"
+        send_notification(target_uid, notif_title, notif_content, 'penalty_notify')
+        
+        print(f"[封禁] 用户 {target_uid} 已被解封")
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"[封禁] 解封失败: {e}")
         conn.close()
         return False
 
@@ -936,7 +1525,7 @@ def record_violation(uid, content, violation_type):
             mute_user(uid, "多次发布违规内容", "系统", 0, 0)
         
         # 发送通知给违规用户
-        create_notification(uid, notif_title, notif_content, "violation")
+        send_notification(uid, notif_title, notif_content, 'violation_notify')
         
         print(f"[违规检测] 用户 {uid} 第 {new_count} 次违规：{action_taken}")
         
@@ -1012,8 +1601,8 @@ def reset_violation_count(uid, operator):
         conn.commit()
         
         # 发送通知
-        create_notification(uid, "✅ 违规记录已重置", 
-                          f"管理员 {operator} 已重置您的违规记录，请珍惜发言机会。", "system")
+        send_notification(uid, "✅ 违规记录已重置", 
+                          f"管理员 {operator} 已重置您的违规记录，请珍惜发言机会。", 'system_notify')
         
         print(f"[违规记录] 用户 {uid} 的违规计数已从 {old_count} 重置为 0")
         conn.close()
@@ -1043,7 +1632,7 @@ def issue_penalty(uid, penalty_type, reason, issued_by, duration=None):
         }
         notif_title = f"⚖️ 您收到了{penalty_names.get(penalty_type, penalty_type)}"
         notif_content = f"原因：{reason}\n操作人：{issued_by}"
-        create_notification(uid, notif_title, notif_content, "penalty")
+        send_notification(uid, notif_title, notif_content, 'penalty_notify')
         
         print(f"[惩罚] 已对用户 {uid} 发布 {penalty_type}")
         conn.close()
@@ -1085,8 +1674,8 @@ def lift_penalty(penalty_id, operator):
             'ban': '封禁',
             'temporary_ban': '临时封禁'
         }
-        create_notification(uid, f"✅ {penalty_names.get(penalty_type, penalty_type)}已解除", 
-                          f"管理员 {operator} 已解除您的惩罚。", "system")
+        send_notification(uid, f"✅ {penalty_names.get(penalty_type, penalty_type)}已解除", 
+                          f"管理员 {operator} 已解除您的惩罚。", 'system_notify')
         
         conn.commit()
         print(f"[惩罚] 已解除用户 {uid} 的惩罚")
@@ -1506,7 +2095,7 @@ def validate_schedule_time(time_str):
         return True, ""
     
     # 支持的格式：HH:MM-HH:MM 或 HH:MM
-    # 格式1: 18:00-22:00
+    # 格式1: 18:00-22:00 或 18:00-00:00（00:00表示次日0点）
     range_pattern = r'^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$'
     # 格式2: 18:00
     single_pattern = r'^(\d{1,2}):(\d{2})$'
@@ -1521,22 +2110,25 @@ def validate_schedule_time(time_str):
         end_hour = int(match_range.group(3))
         end_min = int(match_range.group(4))
         
-        # 检查小时范围
-        if start_hour < 0 or start_hour > 23 or end_hour < 0 or end_hour > 23:
-            return False, "小时必须在0-23之间"
+        # 检查小时范围（结束时间00:00是合法的，表示次日0点）
+        if start_hour < 0 or start_hour > 23:
+            return False, "开始小时必须在0-23之间"
+        if end_hour < 0 or end_hour > 24:
+            return False, "结束小时必须在0-24之间"
+        if end_hour == 24:
+            end_hour = 0  # 24:00 表示次日 00:00
         
         # 检查分钟范围
         if start_min < 0 or start_min > 59 or end_min < 0 or end_min > 59:
             return False, "分钟必须在0-59之间"
         
-        # 检查结束时间要晚于开始时间
-        if start_hour > end_hour or (start_hour == end_hour and start_min >= end_min):
-            return False, "结束时间必须晚于开始时间"
-        
         # 检查时段长度（不超过12小时）
         start_total = start_hour * 60 + start_min
         end_total = end_hour * 60 + end_min
-        if end_total - start_total > 720:
+        duration = end_total - start_total
+        if duration < 0:
+            duration += 24 * 60  # 跨天情况
+        if duration > 720:
             return False, "开服时段不能超过12小时"
         
         return True, ""
@@ -1727,7 +2319,7 @@ def get_client_ip():
 
 # ===================== 安全功能模块 =====================
 # 登录失败限制配置
-MAX_LOGIN_ATTEMPTS = 5  # 最大尝试次数
+MAX_LOGIN_ATTEMPTS = 3  # 最大尝试次数
 LOCK_DURATION_MINUTES = 15  # 锁定时长（分钟）
 
 def is_ip_blocked(ip_address):
@@ -1894,9 +2486,133 @@ app.config.from_pyfile('config.py')
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
-# 添加CORS配置，允许跨域请求
+# Session安全配置
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['PERMANENT_SESSION_LIFETIME'] = 3600 * 24  # 24小时
+
+# 生产环境强制 HTTPS
+if app.config.get('PRODUCTION_MODE', False):
+    app.config['SESSION_COOKIE_SECURE'] = True
+    app.config['SESSION_COOKIE_DOMAIN'] = app.config.get('SITE_DOMAIN', None)
+else:
+    app.config['SESSION_COOKIE_SECURE'] = False  # 开发环境不需要 HTTPS
+
+# 添加CORS配置，限制来源
 from flask_cors import CORS
-CORS(app, supports_credentials=True)
+
+# 根据环境配置允许的域名
+allowed_origins = ['http://127.0.0.1:5000', 'http://localhost:5000']
+site_domain = app.config.get('SITE_DOMAIN', '')
+if site_domain:
+    allowed_origins.append(site_domain)
+    # 生产环境可能使用 HTTPS
+    if site_domain.startswith('https://'):
+        allowed_origins.append(site_domain.replace('https://', 'http://'))
+    elif site_domain.startswith('http://'):
+        allowed_origins.append(site_domain.replace('http://', 'https://'))
+
+CORS(app, supports_credentials=True, origins=allowed_origins)
+
+# ===================== 访问日志中间件 =====================
+@app.before_request
+def before_request_logging():
+    """记录请求开始时间"""
+    request.start_time = time.time()
+
+@app.after_request
+def after_request_logging(response):
+    """记录访问日志"""
+    # 跳过静态文件和健康检查
+    if request.path.startswith('/static/') or request.path == '/favicon.ico':
+        return response
+    
+    duration_ms = int((time.time() - request.start_time) * 1000)
+    remote_addr = request.remote_addr
+    method = request.method
+    path = request.path
+    status = response.status_code
+    user_id = session.get('user', '-')
+    user_agent = request.headers.get('User-Agent', '')
+    
+    log_access(remote_addr, method, path, status, duration_ms, user_id, user_agent)
+    
+    return response
+
+@app.errorhandler(Exception)
+def error_handler_logging(e):
+    """记录异常日志"""
+    import traceback
+    duration_ms = int((time.time() - getattr(request, 'start_time', time.time())) * 1000)
+    remote_addr = request.remote_addr
+    method = request.method
+    path = request.path
+    user_id = session.get('user', '-')
+    
+    # 记录访问日志（错误状态）
+    log_access(remote_addr, method, path, 500, duration_ms, user_id, request.headers.get('User-Agent', ''))
+    
+    # 记录安全日志（错误级别）
+    log_security(
+        remote_addr,
+        'EXCEPTION',
+        path,
+        user_id=user_id,
+        detail=f'{type(e).__name__}: {str(e)}',
+        level='ERROR'
+    )
+    
+    # 记录到错误日志
+    logger.error(f"Exception at {method} {path}: {type(e).__name__}: {str(e)}")
+    logger.error(traceback.format_exc())
+    
+    return jsonify({'ok': 0, 'msg': '服务器内部错误'}), 500
+
+# ===================== CSRF 防护（Cookie 方式） =====================
+@app.after_request
+def set_csrf_cookie(response):
+    """为每个响应设置 CSRF cookie"""
+    if 'csrf_token' not in session:
+        import secrets
+        session['csrf_token'] = secrets.token_hex(32)
+    response.set_cookie('csrf_token', session['csrf_token'], httponly=False, samesite='Lax')
+    return response
+
+@app.before_request
+def csrf_protect():
+    """CSRF 保护：检查 POST 请求的 token"""
+    # 白名单：公开接口和 GET 请求不需要验证
+    exempt_routes = [
+        '/captcha', '/get_site_config', '/get_stats', '/get_reservation_ranking',
+        '/get_friend_links', '/mc_server/status', '/mc_server/players',
+        '/get_schedule', '/get_schedule_detail', '/get_tags', '/get_schedule_reservations',
+        '/favicon.ico'
+    ]
+    
+    if request.path in exempt_routes or request.method == 'GET':
+        return None
+    
+    # 检查 JSON 请求的 CSRF token
+    if request.is_json or request.headers.get('Content-Type') == 'application/json':
+        cookie_token = request.cookies.get('csrf_token')
+        header_token = request.headers.get('X-CSRFToken')
+        session_token = session.get('csrf_token')
+        
+        # 验证 token
+        if not cookie_token or not session_token:
+            return jsonify({'ok': 0, 'msg': 'CSRF验证失败，请刷新页面后重试'}), 400
+        
+        # cookie token 和 header token 至少有一个匹配 session token
+        if cookie_token != session_token and header_token != session_token:
+            return jsonify({'ok': 0, 'msg': 'CSRF验证失败，请刷新页面后重试'}), 400
+    
+    return None
+
+# 处理文件上传大小超限异常
+from werkzeug.exceptions import RequestEntityTooLarge
+@app.errorhandler(RequestEntityTooLarge)
+def handle_file_too_large(e):
+    return jsonify({'ok': 0, 'msg': '文件大小超过限制（最大5MB）'}), 413
 
 # 读取配置（已废弃，改为通过注册昵称判断最高管理员）
 ADMIN_USERNAME = None
@@ -1909,6 +2625,154 @@ scheduler.start()
 
 # 程序退出时关闭调度器
 atexit.register(lambda: scheduler.shutdown())
+
+# ===================== API速率限制 =====================
+# 存储IP请求记录 {ip: {'count': int, 'timestamp': float}}
+_rate_limit_cache = {}
+RATE_LIMIT = 60  # 每分钟最多60次请求
+RATE_LIMIT_WINDOW = 60  # 时间窗口（秒）
+
+def rate_limit_decorator(max_requests=RATE_LIMIT, window=RATE_LIMIT_WINDOW):
+    """API速率限制装饰器"""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            client_ip = request.remote_addr
+            
+            now = time.time()
+            
+            # 清理过期记录
+            for ip in list(_rate_limit_cache.keys()):
+                if now - _rate_limit_cache[ip]['timestamp'] > window:
+                    del _rate_limit_cache[ip]
+            
+            # 检查请求次数
+            if client_ip in _rate_limit_cache:
+                _rate_limit_cache[client_ip]['count'] += 1
+                if _rate_limit_cache[client_ip]['count'] > max_requests:
+                    return jsonify({'ok': 0, 'msg': '请求过于频繁，请稍后重试'}), 429
+            else:
+                _rate_limit_cache[client_ip] = {'count': 1, 'timestamp': now}
+            
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+# ===================== MC服务器状态定时刷新任务 =====================
+def refresh_all_server_status():
+    """定时刷新所有服务器状态缓存"""
+    global server_status_cache
+    
+    print(f"[MC状态刷新] 开始刷新所有服务器状态缓存...")
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        
+        # 获取所有需要查询的档期（有IP、已开启状态查询、未过期）
+        now = datetime.now()
+        c.execute('''
+            SELECT id, ip, year, month, day, 
+                   CASE WHEN type = 'long' THEN 1 ELSE 0 END as is_long,
+                   end_year, end_month, end_day
+            FROM schedules 
+            WHERE ip IS NOT NULL AND ip != '' 
+            AND (mc_status_check = 1 OR mc_status_check IS NULL)
+            AND active_status = 1
+            AND approved = 1
+        ''')
+        
+        schedules = c.fetchall()
+        conn.close()
+        
+        refreshed_count = 0
+        for schedule in schedules:
+            s_id, ip, year, month, day, is_long, end_year, end_month, end_day = schedule
+            
+            # 检查档期是否已过期
+            schedule_date = datetime(year, month, day)
+            if schedule_date.date() < now.date():
+                continue
+            
+            # 检查长期档期的关服日期
+            if is_long == 1 and end_year and end_month and end_day:
+                end_date = datetime(end_year, end_month, end_day)
+                if now > end_date:
+                    continue
+            
+            # 执行实际查询
+            try:
+                parts = ip.split(':')
+                server_host = parts[0]
+                port = int(parts[1]) if len(parts) > 1 else 25565
+                
+                import socket
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(5)
+                
+                start_time = time.time()
+                sock.connect((server_host, port))
+                latency = int((time.time() - start_time) * 1000)
+                
+                # 发送握手包
+                handshake = create_minecraft_handshake(server_host, port)
+                sock.send(handshake)
+                
+                # 接收响应
+                data = sock.recv(1024)
+                sock.close()
+                
+                if data:
+                    query_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    result_data = {
+                        'ok': 1,
+                        'version': '在线',
+                        'motd': '服务器在线',
+                        'players_online': '0',
+                        'players_max': '0',
+                        'latency': latency,
+                        'query_time': query_time
+                    }
+                    
+                    # 缓存结果
+                    cache_key = ip
+                    server_status_cache[cache_key] = {
+                        'timestamp': time.time(),
+                        'data': result_data
+                    }
+                    refreshed_count += 1
+                    print(f"[MC状态刷新] 已刷新: {ip}")
+                    
+            except Exception as e:
+                # 查询失败也缓存失败状态，避免重复查询
+                cache_key = ip
+                server_status_cache[cache_key] = {
+                    'timestamp': time.time(),
+                    'data': {
+                        'ok': 0,
+                        'msg': f'查询失败: {str(e)[:50]}',
+                        'latency': -1
+                    }
+                }
+        
+        print(f"[MC状态刷新] 完成，共刷新 {refreshed_count}/{len(schedules)} 个服务器状态")
+        
+    except Exception as e:
+        print(f"[MC状态刷新] 刷新失败: {e}")
+
+# 立即执行一次初始化刷新
+refresh_all_server_status()
+
+# 每10分钟执行一次刷新任务
+scheduler.add_job(
+    func=refresh_all_server_status,
+    trigger='interval',
+    minutes=10,
+    id='refresh_all_server_status',
+    name='MC服务器状态定时刷新',
+    replace_existing=True
+)
+print("[MC状态刷新] 已启动定时刷新任务（每10分钟）")
 
 # 存储预约ID到任务ID的映射
 reservation_job_map = {}
@@ -2042,6 +2906,14 @@ def send_mail(to, content):
 # 发送OP提交档期通知邮件
 def send_schedule_notification(uid, year, month, day, time, server_id, ip, contact_type, contact_value):
     try:
+        # 检查通知设置
+        inbox_enabled = get_notification_setting('schedule_apply', 'inbox')
+        email_enabled = get_notification_setting('schedule_apply', 'email')
+        
+        if not inbox_enabled and not email_enabled:
+            print(f"[通知] 档期申请通知已全部禁用")
+            return True
+        
         # 构建联系方式显示文本
         contact_text = ""
         if contact_type and contact_value:
@@ -2054,39 +2926,59 @@ def send_schedule_notification(uid, year, month, day, time, server_id, ip, conta
             type_name = contact_type_names.get(contact_type, contact_type)
             contact_text = f"{type_name}: {contact_value}"
         
-        # 构建邮件内容
-        email_content = f"""【MC档期排期站 - 新档期申请】
-
-档主: {uid} 提交了新的档期申请！
+        # 构建通知内容
+        notif_content = f"""档主: {uid} 提交了新的档期申请！
 
 📅 日期: {year}年{month}月{day}日
 ⏰ 时间: {time}
 🎮 服务器ID: {server_id}
 """
         if ip:
-            email_content += f"🌐 IP地址: {ip}\n"
+            notif_content += f"🌐 IP地址: {ip}\n"
         if contact_text:
-            email_content += f"📞 {contact_text}\n"
+            notif_content += f"📞 {contact_text}\n"
         
-        email_content += f"""
+        notif_content += f"""
 请登录管理后台进行审核：{app.config.get('SITE_DOMAIN', 'http://127.0.0.1:5000')}/admin
+"""
+        
+        # 从数据库获取所有管理员
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        c.execute('''SELECT u.id, u.email FROM users u 
+                     JOIN user_role r ON u.id = r.uid 
+                     WHERE r.role IN (?, ?)''', 
+                  (ROLE_ADMIN, ROLE_SUPER_ADMIN))
+        admins = c.fetchall()
+        conn.close()
+        
+        # 发送站内通知
+        if inbox_enabled:
+            for admin in admins:
+                create_inbox_notification(admin[0], "📅 新档期申请待审核", notif_content, 'schedule_apply')
+        
+        # 发送邮件通知
+        if email_enabled:
+            admin_emails = [admin[1] for admin in admins if admin[1] and admin[1] != '']
+            if admin_emails:
+                email_content = f"""【MC档期排期站 - 新档期申请】
+
+{notif_content}
 
 ---
 此邮件由系统自动发送，请勿回复。
 """
-        
-        msg = Message('【提醒】新档期申请待审核',
-                      sender=app.config['MAIL_USERNAME'],
-                      recipients=[ADMIN_EMAIL])
-        msg.body = email_content
-        if use_pool and email_pool_manager:
-            success = email_pool_manager.send_message(msg)
-            if success:
-                print(f"已发送档期通知邮件到 {ADMIN_EMAIL}")
-                return True
-        else:
-            mail.send(msg)
-            print(f"已发送档期通知邮件到 {ADMIN_EMAIL}")
+                msg = Message('【提醒】新档期申请待审核',
+                              sender=app.config['MAIL_USERNAME'],
+                              recipients=admin_emails)
+                msg.body = email_content
+                if use_pool and email_pool_manager:
+                    success = email_pool_manager.send_message(msg)
+                    if success:
+                        print(f"已发送档期通知邮件到管理员: {', '.join(admin_emails)}")
+                else:
+                    mail.send(msg)
+            print(f"已发送档期通知邮件到管理员: {', '.join(admin_emails)}")
             return True
         return False
     except Exception as e:
@@ -2094,83 +2986,79 @@ def send_schedule_notification(uid, year, month, day, time, server_id, ip, conta
         return False
 
 # 发送档主申请通知邮件
-def send_op_apply_notification(uid, server_ip, qq_group):
+def send_op_apply_notification(uid, server_ip, contact):
     try:
-        email_content = f"""【MC档期排期站 - 新档主申请】
-
-玩家 {uid} 申请成为档主！
+        inbox_enabled = get_notification_setting('op_apply', 'inbox')
+        email_enabled = get_notification_setting('op_apply', 'email')
+        
+        if not inbox_enabled and not email_enabled:
+            print(f"[通知] 档主申请通知已全部禁用")
+            return True
+        
+        notif_content = f"""玩家 {uid} 申请成为档主！
 
 """
         if server_ip:
-            email_content += f"🌐 服务器IP: {server_ip}\n"
-        if qq_group:
-            email_content += f"👥 QQ群: {qq_group}\n"
+            notif_content += f"🌐 服务器IP: {server_ip}\n"
+        if contact:
+            notif_content += f"📞 联系方式: {contact}\n"
         
-        email_content += f"""
+        notif_content += f"""
 请登录管理后台进行审核：{app.config.get('SITE_DOMAIN', 'http://127.0.0.1:5000')}/admin
+"""
+        
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        c.execute('''SELECT u.id, u.email FROM users u 
+                     JOIN user_role r ON u.id = r.uid 
+                     WHERE r.role IN (?, ?)''', 
+                  (ROLE_ADMIN, ROLE_SUPER_ADMIN))
+        admins = c.fetchall()
+        conn.close()
+        
+        if inbox_enabled:
+            for admin in admins:
+                create_inbox_notification(admin[0], "👤 新档主申请待审核", notif_content, 'op_apply')
+        
+        if email_enabled:
+            admin_emails = [admin[1] for admin in admins if admin[1] and admin[1] != '']
+            if admin_emails:
+                email_content = f"""【MC档期排期站 - 新档主申请】
+
+{notif_content}
 
 ---
 此邮件由系统自动发送，请勿回复。
 """
-        
-        msg = Message('【提醒】新档主申请待审核',
-                      sender=app.config['MAIL_USERNAME'],
-                      recipients=[ADMIN_EMAIL])
-        msg.body = email_content
-        if use_pool and email_pool_manager:
-            success = email_pool_manager.send_message(msg)
-            if success:
-                print(f"已发送档主申请通知邮件到 {ADMIN_EMAIL}")
-                return True
-        else:
-            mail.send(msg)
-            print(f"已发送档主申请通知邮件到 {ADMIN_EMAIL}")
-            return True
-        return False
+                msg = Message('【提醒】新档主申请待审核',
+                              sender=app.config['MAIL_USERNAME'],
+                              recipients=admin_emails)
+                msg.body = email_content
+                if use_pool and email_pool_manager:
+                    success = email_pool_manager.send_message(msg)
+                    if success:
+                        print(f"已发送档主申请通知邮件到管理员: {', '.join(admin_emails)}")
+                else:
+                    mail.send(msg)
+                    print(f"已发送档主申请通知邮件到管理员: {', '.join(admin_emails)}")
+        return True
     except Exception as e:
         print(f"发送档主申请邮件失败: {e}")
         return False
 
-# 发送玩家想添加QQ的通知邮件
-def send_add_qq_notification(uid, user_email):
-    try:
-        email_content = f"""【MC档期排期站 - 玩家想添加QQ】
-
-玩家 {uid} 想要添加您的QQ！
-
-玩家邮箱：{user_email}
-
----
-此邮件由系统自动发送，请勿回复。
-"""
-        
-        msg = Message('【提醒】玩家想添加QQ',
-                      sender=app.config['MAIL_USERNAME'],
-                      recipients=[ADMIN_EMAIL])
-        msg.body = email_content
-        if use_pool and email_pool_manager:
-            success = email_pool_manager.send_message(msg)
-            if success:
-                print(f"已发送玩家添加QQ通知邮件到 {ADMIN_EMAIL}")
-                return True
-        else:
-            mail.send(msg)
-            print(f"已发送玩家添加QQ通知邮件到 {ADMIN_EMAIL}")
-            return True
-        return False
-    except Exception as e:
-        print(f"发送玩家添加QQ通知邮件失败: {e}")
-        return False
-
-# 发送档期审核结果邮件
+# 发送档期审核结果通知
 def send_schedule_result_email(to_email, uid, approved, year, month, day, time, server_id):
     try:
-        print(f"[DEBUG] 准备发送档期审核结果邮件，接收者: {to_email}, 申请人: {uid}, 批准: {approved}")
+        inbox_enabled = get_notification_setting('schedule_approve', 'inbox')
+        email_enabled = get_notification_setting('schedule_approve', 'email')
+        
+        if not inbox_enabled and not email_enabled:
+            print(f"[通知] 档期审核结果通知已全部禁用")
+            return True
+        
         if approved:
-            subject = "【MC档期排期站】您的档期已批准！"
-            email_content = f"""亲爱的 {uid}：
-
-恭喜！您的服务器档期已批准！
+            notif_title = "✅ 您的档期已批准！"
+            notif_content = f"""恭喜！您的服务器档期已批准！
 
 档期信息：
 日期：{year}年{month}月{day}日
@@ -2178,15 +3066,11 @@ def send_schedule_result_email(to_email, uid, approved, year, month, day, time, 
 服务器ID：{server_id}
 
 欢迎加入我们的社区！
-
----
-此邮件由系统自动发送，请勿回复。
 """
+            email_subject = "【MC档期排期站】您的档期已批准！"
         else:
-            subject = "【MC档期排期站】您的档期申请未通过"
-            email_content = f"""亲爱的 {uid}：
-
-很抱歉，您的服务器档期申请未通过。
+            notif_title = "❌ 您的档期申请未通过"
+            notif_content = f"""很抱歉，您的服务器档期申请未通过。
 
 档期信息：
 日期：{year}年{month}月{day}日
@@ -2194,93 +3078,108 @@ def send_schedule_result_email(to_email, uid, approved, year, month, day, time, 
 服务器ID：{server_id}
 
 如有疑问，请联系管理员。
+"""
+            email_subject = "【MC档期排期站】您的档期申请未通过"
+        
+        if inbox_enabled:
+            create_inbox_notification(uid, notif_title, notif_content, 'schedule_approve')
+        
+        if email_enabled and to_email:
+            email_content = f"""亲爱的 {uid}：
+
+{notif_content}
 
 ---
 此邮件由系统自动发送，请勿回复。
 """
-        
-        print(f"[DEBUG] 邮件内容准备完成，准备发送")
-        msg = Message(subject,
-                      sender=app.config['MAIL_USERNAME'],
-                      recipients=[to_email])
-        msg.body = email_content
-        if use_pool and email_pool_manager:
-            success = email_pool_manager.send_message(msg)
-            if success:
+            msg = Message(email_subject,
+                          sender=app.config['MAIL_USERNAME'],
+                          recipients=[to_email])
+            msg.body = email_content
+            if use_pool and email_pool_manager:
+                success = email_pool_manager.send_message(msg)
+                if success:
+                    print(f"[SUCCESS] 已发送档期审核结果邮件到 {to_email}")
+            else:
+                mail.send(msg)
                 print(f"[SUCCESS] 已发送档期审核结果邮件到 {to_email}")
-                return True
-        else:
-            mail.send(msg)
-            print(f"[SUCCESS] 已发送档期审核结果邮件到 {to_email}")
-            return True
-        return False
+        return True
     except Exception as e:
-        print(f"[ERROR] 发送档期审核结果邮件失败: {e}")
+        print(f"[ERROR] 发送档期审核结果通知失败: {e}")
         import traceback
         traceback.print_exc()
         return False
 
-# 发送档主申请审核结果邮件
+# 发送档主申请审核结果通知
 def send_op_apply_result_email(to_email, uid, approved):
     try:
-        print(f"[DEBUG] 准备发送档主申请审核结果邮件，接收者: {to_email}, 申请人: {uid}, 批准: {approved}")
+        inbox_enabled = get_notification_setting('op_approve', 'inbox')
+        email_enabled = get_notification_setting('op_approve', 'email')
+        
+        if not inbox_enabled and not email_enabled:
+            print(f"[通知] 档主申请审核结果通知已全部禁用")
+            return True
+        
         if approved:
-            subject = "【MC档期排期站】恭喜您成为档主！"
-            email_content = f"""亲爱的 {uid}：
-
-恭喜！您的档主申请已批准！
+            notif_title = "🎉 恭喜您成为档主！"
+            notif_content = f"""恭喜！您的档主申请已批准！
 
 现在您可以：
 - 发布服务器档期
 - 管理自己的档期内容
 
 欢迎加入我们的社区！
-
----
-此邮件由系统自动发送，请勿回复。
 """
+            email_subject = "【MC档期排期站】恭喜您成为档主！"
         else:
-            subject = "【MC档期排期站】您的档主申请未通过"
-            email_content = f"""亲爱的 {uid}：
-
-很抱歉，您的档主申请未通过。
+            notif_title = "😔 您的档主申请未通过"
+            notif_content = f"""很抱歉，您的档主申请未通过。
 
 如有疑问，请联系管理员。
+"""
+            email_subject = "【MC档期排期站】您的档主申请未通过"
+        
+        if inbox_enabled:
+            create_inbox_notification(uid, notif_title, notif_content, 'op_approve')
+        
+        if email_enabled and to_email:
+            email_content = f"""亲爱的 {uid}：
+
+{notif_content}
 
 ---
 此邮件由系统自动发送，请勿回复。
 """
-        
-        print(f"[DEBUG] 邮件内容准备完成，准备发送")
-        msg = Message(subject,
-                      sender=app.config['MAIL_USERNAME'],
-                      recipients=[to_email])
-        msg.body = email_content
-        if use_pool and email_pool_manager:
-            success = email_pool_manager.send_message(msg)
-            if success:
+            msg = Message(email_subject,
+                          sender=app.config['MAIL_USERNAME'],
+                          recipients=[to_email])
+            msg.body = email_content
+            if use_pool and email_pool_manager:
+                success = email_pool_manager.send_message(msg)
+                if success:
+                    print(f"[SUCCESS] 已发送档主申请审核结果邮件到 {to_email}")
+            else:
+                mail.send(msg)
                 print(f"[SUCCESS] 已发送档主申请审核结果邮件到 {to_email}")
-                return True
-        else:
-            mail.send(msg)
-            print(f"[SUCCESS] 已发送档主申请审核结果邮件到 {to_email}")
-            return True
-        return False
+        return True
     except Exception as e:
-        print(f"[ERROR] 发送档主申请审核结果邮件失败: {e}")
+        print(f"[ERROR] 发送档主申请审核结果通知失败: {e}")
         import traceback
         traceback.print_exc()
         return False
 
-# 发送档期删除通知邮件
+# 发送档期删除通知
 def send_schedule_deleted_notification(reservation_users, year, month, day, time, server_id):
     try:
-        print(f"[DEBUG] 准备发送档期删除通知邮件，共 {len(reservation_users)} 位预约用户")
+        inbox_enabled = get_notification_setting('schedule_delete', 'inbox')
+        email_enabled = get_notification_setting('schedule_delete', 'email')
         
-        subject = "【MC档期排期站】您预约的档期已取消"
-        email_content = f"""亲爱的玩家：
-
-您预约的档期已被取消！
+        if not inbox_enabled and not email_enabled:
+            print(f"[通知] 档期删除通知已全部禁用")
+            return True
+        
+        notif_title = "⚠️ 您预约的档期已取消"
+        notif_content = f"""您预约的档期已被取消！
 
 档期信息：
 📅 日期：{year}年{month}月{day}日
@@ -2288,43 +3187,55 @@ def send_schedule_deleted_notification(reservation_users, year, month, day, time
 🎮 服务器：{server_id}
 
 请关注其他档期信息，感谢您的支持！
+"""
+        
+        if inbox_enabled:
+            for user in reservation_users:
+                uid = user[1] if len(user) > 1 else user[0]
+                create_inbox_notification(uid, notif_title, notif_content, 'schedule_delete')
+        
+        if email_enabled:
+            email_recipients = [user[0] for user in reservation_users]
+            email_content = f"""亲爱的玩家：
+
+{notif_content}
 
 ---
 此邮件由系统自动发送，请勿回复。
 """
-        
-        msg = Message(subject,
-                      sender=app.config['MAIL_USERNAME'],
-                      recipients=[user[0] for user in reservation_users])
-        msg.body = email_content
-        
-        if use_pool and email_pool_manager:
-            success = email_pool_manager.send_message(msg)
-            if success:
-                print(f"[SUCCESS] 已发送档期删除通知邮件到 {len(reservation_users)} 位用户")
-                return True
-        else:
-            mail.send(msg)
-            print(f"[SUCCESS] 已发送档期删除通知邮件到 {len(reservation_users)} 位用户")
-            return True
-        return False
+            msg = Message("【MC档期排期站】您预约的档期已取消",
+                          sender=app.config['MAIL_USERNAME'],
+                          recipients=email_recipients)
+            msg.body = email_content
+            
+            if use_pool and email_pool_manager:
+                success = email_pool_manager.send_message(msg)
+                if success:
+                    print(f"[SUCCESS] 已发送档期删除通知邮件到 {len(email_recipients)} 位用户")
+            else:
+                mail.send(msg)
+                print(f"[SUCCESS] 已发送档期删除通知邮件到 {len(email_recipients)} 位用户")
+        return True
     except Exception as e:
-        print(f"[ERROR] 发送档期删除通知邮件失败: {e}")
+        print(f"[ERROR] 发送档期删除通知失败: {e}")
         import traceback
         traceback.print_exc()
         return False
 
-# 发送档期修改通知邮件
+# 发送档期修改通知
 def send_schedule_updated_notification(reservation_users, year, month, day, time, server_id, changes):
     try:
-        print(f"[DEBUG] 准备发送档期修改通知邮件，共 {len(reservation_users)} 位预约用户")
+        inbox_enabled = get_notification_setting('schedule_update', 'inbox')
+        email_enabled = get_notification_setting('schedule_update', 'email')
         
-        subject = "【MC档期排期站】您预约的档期已修改"
+        if not inbox_enabled and not email_enabled:
+            print(f"[通知] 档期修改通知已全部禁用")
+            return True
+        
         changes_text = "\n".join([f"- {change}" for change in changes]) if changes else ""
         
-        email_content = f"""亲爱的玩家：
-
-您预约的档期信息已更新！
+        notif_title = "🔄 您预约的档期已修改"
+        notif_content = f"""您预约的档期信息已更新！
 
 档期信息：
 📅 日期：{year}年{month}月{day}日
@@ -2335,28 +3246,37 @@ def send_schedule_updated_notification(reservation_users, year, month, day, time
 {changes_text}
 
 请确认新的档期时间，感谢您的支持！
+"""
+        
+        if inbox_enabled:
+            for user in reservation_users:
+                uid = user[1] if len(user) > 1 else user[0]
+                create_inbox_notification(uid, notif_title, notif_content, 'schedule_update')
+        
+        if email_enabled:
+            email_recipients = [user[0] for user in reservation_users]
+            email_content = f"""亲爱的玩家：
+
+{notif_content}
 
 ---
 此邮件由系统自动发送，请勿回复。
 """
-        
-        msg = Message(subject,
-                      sender=app.config['MAIL_USERNAME'],
-                      recipients=[user[0] for user in reservation_users])
-        msg.body = email_content
-        
-        if use_pool and email_pool_manager:
-            success = email_pool_manager.send_message(msg)
-            if success:
-                print(f"[SUCCESS] 已发送档期修改通知邮件到 {len(reservation_users)} 位用户")
-                return True
-        else:
-            mail.send(msg)
-            print(f"[SUCCESS] 已发送档期修改通知邮件到 {len(reservation_users)} 位用户")
-            return True
-        return False
+            msg = Message("【MC档期排期站】您预约的档期已修改",
+                          sender=app.config['MAIL_USERNAME'],
+                          recipients=email_recipients)
+            msg.body = email_content
+            
+            if use_pool and email_pool_manager:
+                success = email_pool_manager.send_message(msg)
+                if success:
+                    print(f"[SUCCESS] 已发送档期修改通知邮件到 {len(email_recipients)} 位用户")
+            else:
+                mail.send(msg)
+                print(f"[SUCCESS] 已发送档期修改通知邮件到 {len(email_recipients)} 位用户")
+        return True
     except Exception as e:
-        print(f"[ERROR] 发送档期修改通知邮件失败: {e}")
+        print(f"[ERROR] 发送档期修改通知失败: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -2475,6 +3395,14 @@ def index():
                            role_trusted_op=ROLE_TRUSTED_OP,
                            role_admin=ROLE_ADMIN,
                            role_super_admin=ROLE_SUPER_ADMIN)
+
+# ===================== 路由：积分中心页面 =====================
+@app.route('/points')
+def points_page():
+    current_user = session.get('user', '')
+    if not current_user:
+        return redirect(url_for('index'))
+    return render_template('points.html')
 
 # ===================== 路由：独立Admin后台（仅最高管理员可访问） =====================
 @app.route('/admin')
@@ -2650,12 +3578,12 @@ def inbox_list():
         
         if unread_only:
             c.execute('''SELECT id, title, content, type, read, created_at 
-                        FROM inbox WHERE uid = ? AND read = 0 
+                        FROM notifications WHERE uid = ? AND read = 0 
                         ORDER BY created_at DESC LIMIT ? OFFSET ?''',
                       (uid, page_size, offset))
         else:
             c.execute('''SELECT id, title, content, type, read, created_at 
-                        FROM inbox WHERE uid = ? 
+                        FROM notifications WHERE uid = ? 
                         ORDER BY created_at DESC LIMIT ? OFFSET ?''',
                       (uid, page_size, offset))
         
@@ -2671,7 +3599,7 @@ def inbox_list():
             })
         
         # 获取未读数量
-        c.execute('SELECT COUNT(*) FROM inbox WHERE uid = ? AND read = 0', (uid,))
+        c.execute('SELECT COUNT(*) FROM notifications WHERE uid = ? AND read = 0', (uid,))
         unread_count = c.fetchone()[0]
         
         return jsonify({'ok': 1, 'messages': messages, 'unread_count': unread_count})
@@ -2700,14 +3628,14 @@ def inbox_detail():
     
     try:
         c.execute('''SELECT id, title, content, type, read, created_at 
-                    FROM inbox WHERE id = ? AND uid = ?''', (msg_id, uid))
+                    FROM notifications WHERE id = ? AND uid = ?''', (msg_id, uid))
         row = c.fetchone()
         
         if not row:
             return jsonify({'ok': 0, 'msg': '邮件不存在'})
         
         # 标记为已读
-        c.execute('UPDATE inbox SET read = 1 WHERE id = ?', (msg_id,))
+        c.execute('UPDATE notifications SET read = 1 WHERE id = ?', (msg_id,))
         conn.commit()
         
         message = {
@@ -2745,12 +3673,12 @@ def inbox_delete():
     
     try:
         # 验证邮件属于当前用户
-        c.execute('SELECT uid FROM inbox WHERE id = ?', (msg_id,))
+        c.execute('SELECT uid FROM notifications WHERE id = ?', (msg_id,))
         row = c.fetchone()
         if not row or row[0] != uid:
             return jsonify({'ok': 0, 'msg': '无权删除该邮件'})
         
-        c.execute('DELETE FROM inbox WHERE id = ?', (msg_id,))
+        c.execute('DELETE FROM notifications WHERE id = ?', (msg_id,))
         conn.commit()
         
         return jsonify({'ok': 1, 'msg': '删除成功'})
@@ -2780,7 +3708,7 @@ def inbox_mark_read():
     try:
         # 批量更新
         placeholders = ','.join('?' * len(ids))
-        c.execute(f'UPDATE inbox SET read = 1 WHERE id IN ({placeholders}) AND uid = ?',
+        c.execute(f'UPDATE notifications SET read = 1 WHERE id IN ({placeholders}) AND uid = ?',
                   tuple(ids) + (uid,))
         conn.commit()
         
@@ -2792,16 +3720,195 @@ def inbox_mark_read():
     finally:
         conn.close()
 
+@app.route('/admin/notification_settings', methods=['GET'])
+def get_admin_notification_settings():
+    """获取所有通知设置"""
+    current_user = session.get('user', '')
+    current_role = get_user_role(current_user) if current_user else ROLE_NORMAL
+    if current_role not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    settings = get_all_notification_settings()
+    return jsonify({'ok': 1, 'settings': settings})
+
+
+@app.route('/admin/notification_settings', methods=['POST'])
+def save_admin_notification_settings():
+    """保存通知设置"""
+    current_user = session.get('user', '')
+    current_role = get_user_role(current_user) if current_user else ROLE_NORMAL
+    if current_role not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    data = request.json or {}
+    settings = data.get('settings', {})
+    
+    for key, value in settings.items():
+        if key in NOTIFICATION_SETTINGS:
+            save_notification_setting(key, 'inbox', value.get('inbox', True))
+            save_notification_setting(key, 'email', value.get('email', False))
+    
+    return jsonify({'ok': 1, 'msg': '设置保存成功'})
+
+
+@app.route('/inbox/send', methods=['POST'])
+def inbox_send():
+    """发送站内邮件给指定用户"""
+    current_user = session.get('user', '')
+    current_role = get_user_role(current_user) if current_user else ROLE_NORMAL
+    if current_role not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    data = request.json or {}
+    email = data.get('email', '').strip()
+    msg_type = data.get('type', 'system')
+    title = data.get('title', '').strip()
+    content = data.get('content', '').strip()
+    
+    if not email or not title or not content:
+        return jsonify({'ok': 0, 'msg': '请填写完整信息'})
+    
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    try:
+        c.execute('SELECT id FROM users WHERE email = ?', (email,))
+        user = c.fetchone()
+        if not user:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '用户不存在'})
+        
+        target_uid = user[0]
+        create_notification(target_uid, title, content, msg_type)
+        conn.close()
+        return jsonify({'ok': 1, 'msg': '发送成功'})
+    except Exception as e:
+        conn.close()
+        print(f"[站内邮件] 发送失败: {e}")
+        return jsonify({'ok': 0, 'msg': '发送失败'})
+
+@app.route('/admin/inbox/broadcast', methods=['POST'])
+def admin_inbox_broadcast():
+    """广播通知给指定角色用户"""
+    current_user = session.get('user', '')
+    current_role = get_user_role(current_user) if current_user else ROLE_NORMAL
+    if current_role not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    data = request.json or {}
+    target_role = data.get('target_role', None)
+    title = data.get('title', '').strip()
+    content = data.get('content', '').strip()
+    
+    if not title or not content:
+        return jsonify({'ok': 0, 'msg': '请填写标题和内容'})
+    
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    try:
+        if target_role is None or target_role == '' or target_role == 'all':
+            c.execute('SELECT id FROM users')
+        else:
+            role_value = int(target_role)
+            c.execute('SELECT u.id FROM users u JOIN user_role r ON u.id = r.uid WHERE r.role = ?', (role_value,))
+        
+        users = c.fetchall()
+        sent_count = 0
+        for user in users:
+            if send_notification(user[0], title, content, 'broadcast_notify'):
+                sent_count += 1
+        
+        conn.close()
+        return jsonify({'ok': 1, 'msg': f'已发送给 {sent_count} 个用户'})
+    except Exception as e:
+        conn.close()
+        print(f"[通知] 广播失败: {e}")
+        return jsonify({'ok': 0, 'msg': '发送失败'})
+
+# ===================== 档期开关 API =====================
+@app.route('/schedule/toggle', methods=['POST'])
+def schedule_toggle():
+    """管理员切换档期开关状态"""
+    uid = session.get("user")
+    role = get_user_role(uid)
+    
+    if role not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    data = request.json or {}
+    schedule_id = data.get('schedule_id')
+    
+    if not schedule_id:
+        return jsonify({'ok': 0, 'msg': '请指定档期ID'})
+    
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    
+    try:
+        c.execute('SELECT active_status FROM schedules WHERE id = ?', (schedule_id,))
+        row = c.fetchone()
+        
+        if not row:
+            return jsonify({'ok': 0, 'msg': '档期不存在'})
+        
+        current_status = row[0]
+        new_status = 0 if current_status == 1 else 1
+        
+        c.execute('UPDATE schedules SET active_status = ? WHERE id = ?', (new_status, schedule_id))
+        conn.commit()
+        
+        status_text = '开启' if new_status == 1 else '关闭'
+        print(f"管理员 {uid} 将档期 {schedule_id} 切换为 {status_text} 状态")
+        
+        return jsonify({'ok': 1, 'msg': f'档期已{status_text}', 'active_status': new_status})
+    
+    except Exception as e:
+        logger.error(f"切换档期状态失败: {e}")
+        return jsonify({'ok': 0, 'msg': '操作失败'})
+    finally:
+        conn.close()
+
 # ===================== MC服务器状态查询 API =====================
 @app.route('/mc_server/status', methods=['POST'])
+
 def mc_server_status():
-    """查询MC服务器状态（使用现代协议）"""
+    """查询MC服务器状态（使用现代协议，带缓存）"""
     data = request.json or {}
     host = data.get('host', '')
-    query_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    end_date = data.get('end_date', '')
     
     if not host:
         return jsonify({'ok': 0, 'msg': '请输入服务器地址'})
+    
+    import socket
+    import time
+    import struct
+    import json
+    
+    # 检查缓存
+    cache_key = host
+    current_time = time.time()
+    
+    if cache_key in server_status_cache:
+        cached_data = server_status_cache[cache_key]
+        if current_time - cached_data['timestamp'] < SERVER_STATUS_CACHE_DURATION:
+            # 缓存未过期，返回缓存数据
+            result = cached_data['data'].copy()
+            # 添加缓存剩余时间（秒）
+            result['cache_remaining'] = int(SERVER_STATUS_CACHE_DURATION - (current_time - cached_data['timestamp']))
+            return jsonify(result)
+    
+    # 缓存过期或不存在，执行实际查询
+    query_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    # 检查是否已过期
+    if end_date:
+        try:
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            now_dt = datetime.now()
+            if now_dt > end_dt:
+                return jsonify({'ok': 0, 'msg': '档期已结束，停止检测', 'expired': True, 'query_time': query_time, 'cache_remaining': 0})
+        except ValueError:
+            pass
     
     parts = host.split(':')
     if len(parts) == 1:
@@ -2813,11 +3920,6 @@ def mc_server_status():
             port = int(parts[1])
         except ValueError:
             return jsonify({'ok': 0, 'msg': '端口号必须是数字'})
-    
-    import socket
-    import time
-    import struct
-    import json
     
     def write_varint(value):
         output = bytearray()
@@ -2918,15 +4020,22 @@ def mc_server_status():
                     players_max = str(status.get('players', {}).get('max', 0))
                     
                     sock.close()
-                    return jsonify({
+                    result_data = {
                         'ok': 1,
                         'version': version,
                         'motd': motd[:100] if motd else '服务器在线',
                         'players_online': players_online,
                         'players_max': players_max,
                         'latency': latency,
-                        'query_time': query_time
-                    })
+                        'query_time': query_time,
+                        'cache_remaining': SERVER_STATUS_CACHE_DURATION
+                    }
+                    # 缓存结果
+                    server_status_cache[cache_key] = {
+                        'timestamp': current_time,
+                        'data': result_data
+                    }
+                    return jsonify(result_data)
                 except Exception as e:
                     logger.debug(f"现代协议解析失败: {e}")
             
@@ -2950,46 +4059,61 @@ def mc_server_status():
                             players_online = parts[4] if parts[4] else '0'
                             players_max = parts[5] if parts[5] else '0'
                             sock2.close()
-                            return jsonify({
+                            result_data = {
                                 'ok': 1,
                                 'version': version,
                                 'motd': motd[:100],
                                 'players_online': players_online,
                                 'players_max': players_max,
                                 'latency': latency,
-                                'query_time': query_time
-                            })
+                                'query_time': query_time,
+                                'cache_remaining': SERVER_STATUS_CACHE_DURATION
+                            }
+                            # 缓存结果
+                            server_status_cache[cache_key] = {
+                                'timestamp': current_time,
+                                'data': result_data
+                            }
+                            return jsonify(result_data)
             except Exception as e:
                 logger.debug(f"旧版协议解析失败: {e}")
             finally:
                 sock2.close()
             
-            return jsonify({
+            result_data = {
                 'ok': 1,
                 'version': '未知',
                 'motd': '服务器在线',
                 'players_online': '0',
                 'players_max': '0',
                 'latency': latency,
-                'query_time': query_time
-            })
+                'query_time': query_time,
+                'cache_remaining': SERVER_STATUS_CACHE_DURATION
+            }
+            # 缓存结果
+            server_status_cache[cache_key] = {
+                'timestamp': current_time,
+                'data': result_data
+            }
+            return jsonify(result_data)
             
         except socket.timeout:
             sock.close()
-            return jsonify({'ok': 0, 'msg': '连接超时'})
+            return jsonify({'ok': 0, 'msg': '连接超时', 'query_time': query_time, 'cache_remaining': SERVER_STATUS_CACHE_DURATION})
         except socket.gaierror:
             sock.close()
-            return jsonify({'ok': 0, 'msg': '无法解析服务器地址'})
+            return jsonify({'ok': 0, 'msg': '无法解析服务器地址', 'query_time': query_time, 'cache_remaining': SERVER_STATUS_CACHE_DURATION})
         except Exception as e:
             sock.close()
             logger.error(f"MC服务器查询失败: {e}")
-            return jsonify({'ok': 0, 'msg': f'查询失败: {str(e)}'})
+            return jsonify({'ok': 0, 'msg': f'查询失败: {str(e)}', 'query_time': query_time, 'cache_remaining': SERVER_STATUS_CACHE_DURATION})
     
     except Exception as e:
         logger.error(f"MC服务器状态查询异常: {e}")
-        return jsonify({'ok': 0, 'msg': '查询异常'})
+        return jsonify({'ok': 0, 'msg': '查询异常', 'query_time': '', 'cache_remaining': 0})
 
 @app.route('/mc_server/players', methods=['POST'])
+
 def mc_server_players():
     """查询MC服务器在线玩家"""
     data = request.json or {}
@@ -3078,10 +4202,11 @@ def get_site_title():
 
 # ===================== 获取网站配置（前台用） =====================
 @app.route('/get_site_config', methods=['POST'])
+
 def get_site_config():
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
-    c.execute("SELECT key, value FROM system_config WHERE key IN ('site_title', 'site_announcement', 'footer_text', 'maintenance_mode', 'maintenance_message')")
+    c.execute("SELECT key, value FROM system_config WHERE key IN ('site_title', 'site_announcement', 'footer_text', 'maintenance_mode', 'maintenance_message', 'background_image')")
     rows = c.fetchall()
     conn.close()
     
@@ -3093,6 +4218,7 @@ def get_site_config():
 
 # ===================== 获取统计数据 =====================
 @app.route('/get_stats', methods=['POST'])
+
 def get_stats():
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
@@ -3285,6 +4411,7 @@ def get_reservation_ranking():
 
 # ===================== 获取所有标签（前台用） =====================
 @app.route('/get_tags', methods=['POST'])
+
 def get_tags():
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
@@ -3611,7 +4738,7 @@ def get_all_users():
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
     c.execute('''
-        SELECT u.id, u.uid, u.nickname, u.email, ur.role, u.is_muted, u.violation_count
+        SELECT u.id, u.uid, u.nickname, u.email, ur.role, u.is_muted, u.is_banned, u.violation_count
         FROM users u
         LEFT JOIN user_role ur ON u.id = ur.uid
         ORDER BY u.id
@@ -3625,7 +4752,8 @@ def get_all_users():
             "email": row[3],
             "role": row[4] if row[4] is not None else ROLE_NORMAL,
             "is_muted": bool(row[5]) if row[5] is not None else False,
-            "violation_count": row[6] if row[6] is not None else 0
+            "is_banned": bool(row[6]) if row[6] is not None else False,
+            "violation_count": row[7] if row[7] is not None else 0
         })
     conn.close()
     return jsonify(user_list)
@@ -3679,19 +4807,22 @@ def admin_mute_user():
     if penalty_type in ('mute', 'temporary_ban') and mute_hours > 0:
         duration = f"{mute_hours}小时"
     
-    if issue_penalty(target_uid, penalty_type, reason, current_user, duration):
-        # 如果是禁言类型，同时更新用户禁言状态
-        if penalty_type == 'mute':
-            conn = sqlite3.connect('database.db')
-            c = conn.cursor()
-            c.execute("UPDATE users SET is_muted = 1 WHERE id = ?", (target_uid,))
-            conn.commit()
-            conn.close()
-        
-        log_operation(current_user, 'issue_penalty', target_uid, f'类型: {penalty_type}, 原因: {reason}, 期限: {duration}')
-        return jsonify({'ok': 1, 'msg': '惩罚发布成功'})
+    # 如果是禁言类型，调用禁言函数创建禁言记录
+    if penalty_type == 'mute':
+        mute_type = 0 if mute_hours == 0 else 1  # 0=永久，1=限时
+        mute_user(target_uid, reason, current_user, mute_type, mute_hours)
+    # 如果是封禁类型，调用封禁函数
+    elif penalty_type in ('ban', 'temporary_ban'):
+        ban_type = 0 if penalty_type == 'ban' else 1  # 0=永久，1=限时
+        ban_days = int(mute_hours / 24) if mute_hours > 0 else 0
+        ban_user(target_uid, reason, current_user, ban_type, ban_days)
+    elif issue_penalty(target_uid, penalty_type, reason, current_user, duration):
+        pass  # 其他惩罚类型继续原有逻辑
     else:
         return jsonify({'ok': 0, 'msg': '惩罚发布失败'})
+    
+    log_operation(current_user, 'issue_penalty', target_uid, f'类型: {penalty_type}, 原因: {reason}, 期限: {duration}')
+    return jsonify({'ok': 1, 'msg': '惩罚发布成功'})
 
 
 @app.route('/admin/unmute', methods=['POST'])
@@ -4109,6 +5240,7 @@ def admin_batch_delete_friend_links():
 
 
 @app.route('/get_friend_links', methods=['GET'])
+
 def get_friend_links():
     """获取启用的友链列表（公开接口）"""
     conn = sqlite3.connect('database.db')
@@ -4205,8 +5337,74 @@ def admin_batch_delete_penalties():
     return jsonify({'ok': 1, 'msg': f'已删除 {len(ids)} 条惩罚记录'})
 
 
+# ===================== 图片验证码 =====================
+import random
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont
+
+def generate_captcha():
+    width, height = 120, 40
+    image = Image.new('RGB', (width, height), (255, 255, 255))
+    draw = ImageDraw.Draw(image)
+    
+    chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+    captcha_text = ''.join(random.choice(chars) for _ in range(4))
+    
+    font_size = 24
+    try:
+        font = ImageFont.truetype('arial.ttf', font_size)
+    except:
+        font = ImageFont.load_default()
+    
+    for i, char in enumerate(captcha_text):
+        x = 15 + i * 25
+        y = random.randint(5, height - 30)
+        draw.text((x, y), char, font=font, fill=(random.randint(0, 150), random.randint(0, 150), random.randint(0, 150)))
+    
+    for _ in range(20):
+        x1 = random.randint(0, width)
+        y1 = random.randint(0, height)
+        x2 = random.randint(0, width)
+        y2 = random.randint(0, height)
+        draw.line((x1, y1, x2, y2), fill=(random.randint(100, 200), random.randint(100, 200), random.randint(100, 200)), width=1)
+    
+    for _ in range(50):
+        x = random.randint(0, width)
+        y = random.randint(0, height)
+        draw.point((x, y), fill=(random.randint(100, 200), random.randint(100, 200), random.randint(100, 200)))
+    
+    buffer = BytesIO()
+    image.save(buffer, format='PNG')
+    buffer.seek(0)
+    
+    return captcha_text, buffer
+
+@app.route('/captcha')
+@rate_limit_decorator(max_requests=30, window=60)
+
+def get_captcha():
+    captcha_text, buffer = generate_captcha()
+    session['captcha'] = captcha_text.lower()
+    
+    response = app.response_class(
+        response=buffer.read(),
+        status=200,
+        mimetype='image/png'
+    )
+    return response
+
+def verify_captcha(input_code):
+    if not input_code:
+        return False
+    captcha = session.get('captcha', '')
+    if not captcha:
+        return False
+    return input_code.lower() == captcha
+
+
 # ===================== 邮箱验证码 =====================
 @app.route('/send_code', methods=['POST'])
+@rate_limit_decorator(max_requests=5, window=60)
 def send_code():
     try:
         print("=== send_code 被调用了！")
@@ -4214,8 +5412,13 @@ def send_code():
         print(f"收到数据: {data}")
         
         email = data.get('email', '').strip()
+        captcha = data.get('captcha', '').strip()
+        
         if not email:
-            return jsonify({'ok': 0, 'msg': '邮箱不能为空'})
+            return jsonify({'ok': 0, 'msg': '请输入邮箱地址'})
+        
+        if not verify_captcha(captcha):
+            return jsonify({'ok': 0, 'msg': '验证码错误'})
 
         # 检查发送间隔（5分钟内不能重复发送）
         conn = sqlite3.connect('database.db')
@@ -4290,38 +5493,55 @@ def generate_uid(conn=None):
 
 # ===================== 注册 =====================
 @app.route('/register', methods=['POST'])
+@rate_limit_decorator(max_requests=10, window=300)
 def register():
     try:
-        print("=== register 被调用了！")
         data = request.json or {}
-        print(f"收到数据: {data}")
         
-        nickname = data.get('nickname', '').strip()  # 用户输入的是昵称
+        nickname = data.get('nickname', '').strip()
         pwd = data.get('pwd', '').strip()
         email = data.get('email', '').strip()
         input_code = data.get('code', '').strip()
+        
+        ip_address = get_client_ip()
 
         if not nickname or not pwd or not email or not input_code:
+            log_security(ip_address, 'REGISTER_FAILED', 'INCOMPLETE_DATA', detail='注册信息不完整')
             return jsonify({'ok': 0, 'msg': '请填写完整信息'})
 
-        # ========== 昵称审核 ==========
         is_valid, error_msg = validate_nickname(nickname)
         if not is_valid:
-            print(f"[审核] 昵称审核失败: {error_msg}")
+            log_security(ip_address, 'REGISTER_FAILED', 'INVALID_NICKNAME', detail=f'昵称审核失败: {error_msg}')
             return jsonify({'ok': 0, 'msg': error_msg})
         
-        # ========== 密码审核 ==========
         is_valid, error_msg = validate_password(pwd)
         if not is_valid:
-            print(f"[审核] 密码审核失败: {error_msg}")
+            log_security(ip_address, 'REGISTER_FAILED', 'INVALID_PASSWORD', detail=f'密码审核失败: {error_msg}')
             return jsonify({'ok': 0, 'msg': error_msg})
         
-        # ========== 邮箱格式审核 ==========
         email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
         if not re.match(email_pattern, email):
+            log_security(ip_address, 'REGISTER_FAILED', 'INVALID_EMAIL_FORMAT', detail=f'邮箱格式错误: {email}')
             return jsonify({'ok': 0, 'msg': '邮箱格式不正确'})
         
-        # 清理输入数据
+        allowed_domains = {
+            'qq.com', 'vip.qq.com', 'foxmail.com', 'qiye.qq.com',
+            '163.com', '126.com', 'yeah.net', 'vip.163.com', '163.net',
+            'sina.com', 'sina.cn', 'vip.sina.com',
+            'sohu.com', 'vip.sohu.com',
+            'aliyun.com', 'alibaba.com', 'taobao.com', 'tmall.com',
+            '139.com', '189.cn', 'wo.cn',
+            'hotmail.com', 'outlook.com', 'live.com', 'msn.com', 'live.cn',
+            'gmail.com',
+            'yahoo.com', 'yahoo.cn', 'yahoo.com.cn',
+            'me.com', 'icloud.com', 'protonmail.com', 'outlook.office.com'
+        }
+        
+        email_domain = email.split('@')[1].lower()
+        if email_domain not in allowed_domains:
+            log_security(ip_address, 'REGISTER_FAILED', 'EMAIL_DOMAIN_BLOCKED', detail=f'邮箱后缀不允许: {email_domain}')
+            return jsonify({'ok': 0, 'msg': '暂不支持该邮箱后缀，请使用QQ、网易、新浪等主流邮箱注册'})
+        
         nickname = sanitize_input(nickname, 20)
         pwd = sanitize_input(pwd, 32)
         email = sanitize_input(email, 100)
@@ -4334,36 +5554,56 @@ def register():
         row = c.fetchone()
         if not row or row[0] != input_code:
             conn.close()
+            log_security(ip_address, 'REGISTER_FAILED', 'INVALID_CODE', detail=f'验证码错误或过期: {email}')
             return jsonify({'ok': 0, 'msg': '验证码错误或已过期'})
 
-        # 生成唯一的数字ID（使用现有的数据库连接）
         uid = generate_uid(conn)
-        user_id = str(uid)  # 字符串形式用于主键
+        user_id = str(uid)
         
-        # 使用bcrypt加密密码
         hashed_password = bcrypt.hashpw(pwd.encode(), bcrypt.gensalt()).decode()
         c.execute("INSERT INTO users (id, uid, nickname, pwd, email, verified) VALUES (?, ?, ?, ?, ?, 1)", 
                   (user_id, uid, nickname, hashed_password, email))
         
-        # 根据注册昵称分配角色
         if nickname == SUPER_ADMIN_ID:
-            # 使用配置的最高管理员昵称注册，成为最高管理员
             c.execute("INSERT INTO user_role (uid, role) VALUES (?, ?)", (user_id, ROLE_SUPER_ADMIN))
-            print(f"[管理员] 用户 {nickname} 使用最高管理员昵称注册，已设置为最高管理员")
+            log_security(ip_address, 'REGISTER_SUCCESS', 'SUPER_ADMIN', user_id=user_id, detail=f'用户 {nickname} 使用最高管理员昵称注册')
         else:
             c.execute("INSERT INTO user_role (uid, role) VALUES (?, ?)", (user_id, ROLE_NORMAL))
         
         conn.commit()
+        
+        add_user_points(user_id, 50, '新用户注册奖励')
+        
+        send_notification(user_id, "🎉 欢迎加入MC档期排期站！", 
+                         f"""亲爱的 {nickname}：
+
+欢迎加入MC档期排期站！
+
+🎮 您现在可以：
+• 浏览所有服务器档期信息
+• 预约您感兴趣的服务器
+• 申请成为档主，发布自己的服务器档期
+
+💡 温馨提示：
+• 请完善您的个人资料
+• 遵守社区规则，文明交流
+• 如有问题，请联系管理员
+
+祝您游戏愉快！
+""", 'welcome_notify')
+        
         conn.close()
         
-        print(f"注册成功，用户ID: {uid}, 昵称: {nickname}")
+        log_security(ip_address, 'REGISTER_SUCCESS', f'USER_{user_id}', user_id=user_id, detail=f'用户 {nickname} 注册成功')
         return jsonify({'ok': 1, 'msg': '注册成功！', 'uid': uid, 'nickname': nickname, 'email': email})
     except sqlite3.IntegrityError:
+        log_security(get_client_ip(), 'REGISTER_FAILED', 'EMAIL_EXISTS', detail=f'邮箱已被注册: {email}')
         return jsonify({'ok': 0, 'msg': '邮箱已被注册'})
     except Exception as e:
         import traceback
-        print("=== register 出现错误 ===")
-        traceback.print_exc()
+        log_security(get_client_ip(), 'REGISTER_FAILED', 'EXCEPTION', detail=f'注册异常: {str(e)}', level='ERROR')
+        logger.error(f"注册异常: {str(e)}")
+        logger.error(traceback.format_exc())
         return jsonify({'ok': 0, 'msg': f'注册失败: {str(e)}'})
 
 # ===================== 发送重置密码验证码 =====================
@@ -4469,9 +5709,9 @@ def reset_password():
             conn.close()
             return jsonify({'ok': 0, 'msg': '验证码错误或已过期'})
 
-        # 更新密码
-        pwd_md5 = hashlib.md5(new_password.encode()).hexdigest()
-        c.execute("UPDATE users SET pwd = ? WHERE email = ?", (pwd_md5, email))
+        # 更新密码（使用bcrypt）
+        new_hashed_password = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+        c.execute("UPDATE users SET pwd = ? WHERE email = ?", (new_hashed_password, email))
         c.execute("DELETE FROM codes WHERE email = ?", (email,))
         conn.commit()
         conn.close()
@@ -4486,79 +5726,78 @@ def reset_password():
 
 # ===================== 登录 =====================
 @app.route('/login', methods=['POST'])
+@rate_limit_decorator(max_requests=10, window=60)
 def login():
     data = request.json or {}
-    login_input = data.get('id', '').strip()  # 用户输入的可以是数字ID或邮箱
+    login_input = data.get('id', '').strip()
     pwd = data.get('pwd', '').strip()
 
     if not login_input or not pwd:
         return jsonify({'ok': 0, 'msg': '请填写账号密码'})
 
-    # 获取客户端IP
     ip_address = get_client_ip()
     
-    # 检查IP是否被拉黑
     if is_ip_blocked(ip_address):
+        log_security(ip_address, 'LOGIN_BLOCKED', 'IP_BLOCKED', detail=f'IP {ip_address} 已被拉黑')
         return jsonify({'ok': 0, 'msg': '您的IP已被限制访问'})
 
     pwd_md5 = md5(pwd)
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
     
-    # 只支持邮箱登录
     if '@' in login_input:
         c.execute("SELECT id, pwd, verified, nickname FROM users WHERE email = ?", (login_input,))
     else:
         conn.close()
+        log_security(ip_address, 'LOGIN_FAILED', 'INVALID_FORMAT', detail='使用非邮箱格式登录')
         return jsonify({'ok': 0, 'msg': '请使用邮箱登录'})
     
     row = c.fetchone()
     conn.close()
 
     if not row:
-        # 记录失败尝试
         record_login_attempt(login_input, ip_address, False)
+        log_security(ip_address, 'LOGIN_FAILED', 'USER_NOT_FOUND', detail=f'账号 {login_input} 不存在')
         return jsonify({'ok': 0, 'msg': '账号不存在或密码错误'})
     
     user_id, db_pwd, verified, nickname = row
     
-    # 检查账号是否被锁定（使用实际的user_id）
     if is_account_locked(user_id, ip_address):
+        log_security(ip_address, 'LOGIN_FAILED', 'ACCOUNT_LOCKED', user_id=user_id, detail='账号已被锁定')
         return jsonify({'ok': 0, 'msg': f'账号已被锁定，请{LOCK_DURATION_MINUTES}分钟后再试'})
 
-    # 支持bcrypt和MD5两种密码格式
     password_valid = False
     if db_pwd.startswith('$2b$') or db_pwd.startswith('$2a$'):
-        # bcrypt格式
         password_valid = bcrypt.checkpw(pwd.encode(), db_pwd.encode())
     else:
-        # 旧的MD5格式
         password_valid = (db_pwd == pwd_md5)
 
     if not password_valid:
-        # 记录失败尝试
         record_login_attempt(login_input, ip_address, False)
         
-        # 检查失败次数
         failed_count = get_failed_login_count(user_id, ip_address)
         if failed_count >= MAX_LOGIN_ATTEMPTS:
             lock_account(user_id, ip_address)
-            return jsonify({'ok': 0, 'msg': f'密码错误次数过多，账号已被锁定{LOCK_DURATION_MINUTES}分钟'})
+            log_security(ip_address, 'LOGIN_FAILED', 'ACCOUNT_LOCKED', user_id=user_id, detail=f'密码错误{MAX_LOGIN_ATTEMPTS}次，账号被锁定')
         
-        remaining = MAX_LOGIN_ATTEMPTS - failed_count
-        return jsonify({'ok': 0, 'msg': f'密码错误，还剩{remaining}次尝试机会'})
+        log_security(ip_address, 'LOGIN_FAILED', 'WRONG_PASSWORD', user_id=user_id, detail=f'密码错误，剩余{MAX_LOGIN_ATTEMPTS - failed_count}次')
+        return jsonify({'ok': 0, 'msg': f'密码错误，还剩{MAX_LOGIN_ATTEMPTS - failed_count}次尝试机会'})
     
     if verified != 1:
+        log_security(ip_address, 'LOGIN_FAILED', 'NOT_VERIFIED', user_id=user_id, detail='账号未验证')
         return jsonify({'ok': 0, 'msg': '请先完成邮箱验证'})
+    
+    if is_user_banned(user_id):
+        log_security(ip_address, 'LOGIN_FAILED', 'ACCOUNT_BANNED', user_id=user_id, detail='账号已被封禁')
+        return jsonify({'ok': 0, 'msg': '您的账号已被封禁'})
 
-    # 登录成功，记录成功尝试
     record_login_attempt(login_input, ip_address, True)
     
-    # 设置会话过期时间为1小时
     session.permanent = True
     app.permanent_session_lifetime = timedelta(hours=1)
     session['user'] = user_id
     
+    log_security(ip_address, 'LOGIN_SUCCESS', f'USER_{user_id}', user_id=user_id, detail=f'用户 {nickname} 登录成功')
     log_operation(user_id, 'login', user_id, '用户登录成功')
     
     return jsonify({'ok': 1, 'msg': '登录成功', 'nickname': nickname})
@@ -4771,6 +6010,7 @@ def get_login_attempts():
 
 # ===================== 获取档期 =====================
 @app.route('/get_schedule', methods=['POST'])
+
 def get_schedule():
     data = request.json or {}
     print(f"收到的查询参数: {data}")
@@ -4787,14 +6027,14 @@ def get_schedule():
 
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
-    c.execute('''SELECT id, day, time, server_id, ip, contact_type, contact_value, created_by, created_at
-                 FROM schedules WHERE year=? AND month=? AND approved=1''', (year, month))
+    c.execute('''SELECT id, day, type, end_year, end_month, end_day, time, server_id, ip, contact_type, contact_value, created_by, created_at, active_status, mc_status_check
+                 FROM schedules WHERE year=? AND month=? AND approved=1 AND active_status=1''', (year, month))
     rows = c.fetchall()
     print(f"查询到 {len(rows)} 条档期记录")
 
     res = []
     for item in rows:
-        s_id, day, s_time, srv_id, ip, contact_type, contact_value, created_by, created_at = item
+        s_id, day, s_type, end_year, end_month, end_day, s_time, srv_id, ip, contact_type, contact_value, created_by, created_at, active_status, mc_status_check = item
         schedule_dt = datetime(year, month, day)
         if schedule_dt.date() > now_dt.date():
             status = "future"
@@ -4812,6 +6052,10 @@ def get_schedule():
             "year": year,
             "month": month,
             "day": day,
+            "type": s_type,
+            "end_year": end_year,
+            "end_month": end_month,
+            "end_day": end_day,
             "time": s_time,
             "server_id": srv_id,
             "ip": ip,
@@ -4820,7 +6064,8 @@ def get_schedule():
             "created_by": created_by,
             "created_at": created_at,
             "status": status,
-            "reservation_count": reservation_count
+            "reservation_count": reservation_count,
+            "mc_status_check": mc_status_check
         })
     
     conn.close()
@@ -4831,6 +6076,13 @@ def get_schedule():
 @app.route('/add_schedule', methods=['POST'])
 def add_schedule():
     uid = session.get("user")
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    # 检查用户是否被封禁
+    if is_user_banned(uid):
+        return jsonify({'ok': 0, 'msg': '您的账号已被封禁，无法添加档期！'})
+    
     role = get_user_role(uid)
     if role not in (ROLE_OP, ROLE_TRUSTED_OP, ROLE_ADMIN, ROLE_SUPER_ADMIN):
         return jsonify({'ok': 0, 'msg': '权限不足，无法新增档期'})
@@ -4849,6 +6101,10 @@ def add_schedule():
         year = int(data.get("year"))
         month = int(data.get("month"))
         day = int(data.get("day"))
+        s_type = data.get("type", "short")
+        end_year = data.get("end_year")
+        end_month = data.get("end_month")
+        end_day = data.get("end_day")
         s_time = data.get("time", "")
         srv_id = data.get("server_id", "").strip()
         ip = data.get("ip", "").strip()
@@ -4858,6 +6114,29 @@ def add_schedule():
     except (TypeError, ValueError) as e:
         print(f"数据转换错误: {e}")
         return jsonify({'ok': 0, 'msg': '数据格式错误'})
+    
+    # 验证关服日期（如果有）
+    if end_year and end_month and end_day:
+        try:
+            end_year = int(end_year)
+            end_month = int(end_month)
+            end_day = int(end_day)
+            
+            # 验证关服日期不能早于开服日期
+            from datetime import date
+            start_date = date(year, month, day)
+            end_date = date(end_year, end_month, end_day)
+            if end_date < start_date:
+                return jsonify({'ok': 0, 'msg': '关服日期不能早于开服日期'})
+            
+            # 验证关服日期最长一个月
+            max_end_date = start_date.replace(day=1) + timedelta(days=32)
+            max_end_date = max_end_date.replace(day=1) - timedelta(days=1)
+            if end_date > max_end_date:
+                return jsonify({'ok': 0, 'msg': '关服日期最长只能设置为开服日期后一个月'})
+        except (TypeError, ValueError) as e:
+            print(f"关服日期验证错误: {e}")
+            return jsonify({'ok': 0, 'msg': '关服日期格式错误'})
     
     # ========== 档期日期审核 ==========
     is_valid, error_msg = validate_schedule_date(year, month, day)
@@ -4902,9 +6181,11 @@ def add_schedule():
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
     c.execute('''INSERT INTO schedules
-                 (year, month, day, time, server_id, ip, contact_type, contact_value, approved, created_by)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
-              (year, month, day, s_time, srv_id, ip, contact_type, contact_value, approved, uid))
+                 (year, month, day, type, end_year, end_month, end_day,
+                  time, server_id, ip, contact_type, contact_value, approved, created_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+              (year, month, day, s_type, end_year, end_month, end_day,
+               s_time, srv_id, ip, contact_type, contact_value, approved, uid))
     conn.commit()
     new_id = c.lastrowid
     print(f"已保存档期ID: {new_id}, 日期: {year}-{month}-{day}, 创建者: {uid}, 状态: {approved}")
@@ -4937,7 +6218,16 @@ def add_schedule():
 @app.route('/edit_schedule', methods=['POST'])
 def edit_schedule():
     uid = session.get("user")
+    print(f"[edit_schedule] session user: {uid}")
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    # 检查用户是否被封禁
+    if is_user_banned(uid):
+        return jsonify({'ok': 0, 'msg': '您的账号已被封禁，无法修改档期！'})
+    
     role = get_user_role(uid)
+    print(f"[edit_schedule] user role: {role}")
     if role not in (ROLE_OP, ROLE_TRUSTED_OP, ROLE_ADMIN, ROLE_SUPER_ADMIN):
         return jsonify({'ok': 0, 'msg': '权限不足，无法修改档期'})
 
@@ -4955,14 +6245,40 @@ def edit_schedule():
         year = int(data.get("year"))
         month = int(data.get("month"))
         day = int(data.get("day"))
+        s_type = data.get("type", "short")
+        end_year = data.get("end_year")
+        end_month = data.get("end_month")
+        end_day = data.get("end_day")
         s_time = data.get("time", "")
         srv_id = data.get("server_id", "").strip()
         ip = data.get("ip", "").strip()
         contact_type = data.get("contact_type", "").strip()
         contact_value = data.get("contact_value", "").strip()
+        mc_status_check = data.get("mc_status_check", 0)
     except (TypeError, ValueError) as e:
         print(f"数据转换错误: {e}")
         return jsonify({'ok': 0, 'msg': '数据格式错误'})
+    
+    # 验证关服日期（如果有）
+    if end_year and end_month and end_day:
+        try:
+            end_year = int(end_year)
+            end_month = int(end_month)
+            end_day = int(end_day)
+            
+            from datetime import date
+            start_date = date(year, month, day)
+            end_date = date(end_year, end_month, end_day)
+            if end_date < start_date:
+                return jsonify({'ok': 0, 'msg': '关服日期不能早于开服日期'})
+            
+            max_end_date = start_date.replace(day=1) + timedelta(days=32)
+            max_end_date = max_end_date.replace(day=1) - timedelta(days=1)
+            if end_date > max_end_date:
+                return jsonify({'ok': 0, 'msg': '关服日期最长只能设置为开服日期后一个月'})
+        except (TypeError, ValueError) as e:
+            print(f"关服日期验证错误: {e}")
+            return jsonify({'ok': 0, 'msg': '关服日期格式错误'})
     
     # ========== 每个档期每天只能修改1次（管理员和信用档主不受限制）==========
     if role in (ROLE_OP, ROLE_TRUSTED_OP):
@@ -5055,9 +6371,11 @@ def edit_schedule():
         changes.append(f"联系方式已修改")
     
     c.execute('''UPDATE schedules 
-                 SET year=?, month=?, day=?, time=?, server_id=?, ip=?, contact_type=?, contact_value=?
+                 SET year=?, month=?, day=?, type=?, end_year=?, end_month=?, end_day=?,
+                     time=?, server_id=?, ip=?, contact_type=?, contact_value=?, mc_status_check=?
                  WHERE id=?''', 
-              (year, month, day, s_time, srv_id, ip, contact_type, contact_value, s_id))
+              (year, month, day, s_type, end_year, end_month, end_day,
+               s_time, srv_id, ip, contact_type, contact_value, mc_status_check, s_id))
     conn.commit()
     conn.close()
     
@@ -5084,15 +6402,44 @@ def edit_schedule():
     
     return jsonify({'ok': 1, 'msg': '修改档期成功'})
 
+# ===================== 切换服务器状态查询开关（管理员专用） =====================
+@app.route('/toggle_mc_status_check', methods=['POST'])
+def toggle_mc_status_check():
+    uid = session.get("user")
+    role = get_user_role(uid)
+    if role not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+        return jsonify({'ok': 0, 'msg': '权限不足，只有管理员可以修改此设置'})
+
+    data = request.json or {}
+    schedule_id = data.get("schedule_id")
+    mc_status_check = data.get("mc_status_check", 0)
+
+    if not schedule_id:
+        return jsonify({'ok': 0, 'msg': '档期ID不能为空'})
+
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        c.execute('''UPDATE schedules SET mc_status_check = ? WHERE id = ?''', 
+                   (mc_status_check, schedule_id))
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': 1, 'msg': '设置已更新'})
+    except Exception as e:
+        print(f"切换服务器状态查询失败: {e}")
+        return jsonify({'ok': 0, 'msg': '操作失败'})
+
 # ===================== 获取单个档期详情（用于编辑） =====================
 @app.route('/get_schedule_detail', methods=['POST'])
+
 def get_schedule_detail():
     data = request.json or {}
     s_id = data.get("id")
     
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
-    c.execute('''SELECT id, year, month, day, time, server_id, ip, contact_type, contact_value, created_by
+    c.execute('''SELECT id, year, month, day, type, end_year, end_month, end_day, 
+                        time, server_id, ip, contact_type, contact_value, mc_status_check, created_by
                  FROM schedules WHERE id=?''', (s_id,))
     row = c.fetchone()
     
@@ -5118,12 +6465,17 @@ def get_schedule_detail():
             'year': row[1],
             'month': row[2],
             'day': row[3],
-            'time': row[4],
-            'server_id': row[5],
-            'ip': row[6],
-            'contact_type': row[7],
-            'contact_value': row[8],
-            'created_by': row[9]
+            'type': row[4],
+            'end_year': row[5],
+            'end_month': row[6],
+            'end_day': row[7],
+            'time': row[8],
+            'server_id': row[9],
+            'ip': row[10],
+            'contact_type': row[11],
+            'contact_value': row[12],
+            'mc_status_check': row[13],
+            'created_by': row[14]
         },
         'reservation_count': reservation_count,
         'notify_sent': notify_sent
@@ -5133,6 +6485,13 @@ def get_schedule_detail():
 @app.route('/del_schedule', methods=['POST'])
 def del_schedule():
     uid = session.get("user")
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    # 检查用户是否被封禁
+    if is_user_banned(uid):
+        return jsonify({'ok': 0, 'msg': '您的账号已被封禁，无法删除档期！'})
+    
     role = get_user_role(uid)
     if role not in (ROLE_OP, ROLE_TRUSTED_OP, ROLE_ADMIN, ROLE_SUPER_ADMIN):
         return jsonify({'ok': 0, 'msg': '权限不足'})
@@ -5171,6 +6530,9 @@ def del_schedule():
     # 先删除相关预约的定时任务
     delete_reservation_jobs(s_id)
     
+    # 删除档期标签关联
+    c.execute("DELETE FROM schedule_tags WHERE schedule_id=?", (s_id,))
+    
     # 删除档期
     c.execute("DELETE FROM schedules WHERE id=?", (s_id,))
     
@@ -5193,29 +6555,37 @@ def set_user_role():
     role = get_user_role(uid)
     if role not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
         return jsonify({'ok': 0, 'msg': '仅管理员可操作'})
-
+    
     data = request.json or {}
-    target_uid = data.get("target_uid", "").strip()
-    target_role = int(data.get("target_role", 0))
-
-    # 普通管理员不能设置管理员、信用档主、最高管理员
-    if role == ROLE_ADMIN and target_role in (ROLE_ADMIN, ROLE_SUPER_ADMIN, ROLE_TRUSTED_OP):
-        return jsonify({'ok': 0, 'msg': '权限不足，无法设置此角色'})
-
+    target_uid = data.get("target_uid")
+    target_role = data.get("target_role")
+    
+    if not target_uid or target_role is None:
+        return jsonify({'ok': 0, 'msg': '参数错误'})
+    
+    try:
+        target_role = int(target_role)
+    except ValueError:
+        return jsonify({'ok': 0, 'msg': '权限值无效'})
+    
+    if target_role < ROLE_NORMAL or target_role > ROLE_SUPER_ADMIN:
+        return jsonify({'ok': 0, 'msg': '权限值超出范围'})
+    
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
-    c.execute("SELECT id FROM users WHERE id=?", (target_uid,))
-    if not c.fetchone():
-        conn.close()
-        return jsonify({'ok': 0, 'msg': '该账号不存在'})
-    c.execute("REPLACE INTO user_role (uid, role) VALUES (?, ?)", (target_uid, target_role))
+    
+    c.execute("SELECT role FROM user_role WHERE uid = ?", (target_uid,))
+    row = c.fetchone()
+    
+    if row:
+        c.execute("UPDATE user_role SET role = ? WHERE uid = ?", (target_role, target_uid))
+    else:
+        c.execute("INSERT INTO user_role (uid, role) VALUES (?, ?)", (target_uid, target_role))
+    
     conn.commit()
     conn.close()
     
-    role_names = {0: '普通成员', 1: '档主', 2: '信用档主', 3: '管理员', 4: '最高管理员'}
-    log_operation(uid, 'set_user_role', target_uid, f'设置角色为: {role_names.get(target_role, target_role)}')
-    
-    return jsonify({'ok': 1, 'msg': '权限设置成功'})
+    return jsonify({'ok': 1, 'msg': '权限修改成功'})
 
 # ===================== 删除用户 =====================
 @app.route('/delete_user', methods=['POST'])
@@ -5237,6 +6607,14 @@ def delete_user():
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
     try:
+        c.execute("DELETE FROM reservations WHERE user_id=?", (target_uid,))
+        c.execute("DELETE FROM op_applications WHERE uid=?", (target_uid,))
+        c.execute("DELETE FROM penalties WHERE uid=?", (target_uid,))
+        c.execute("DELETE FROM op_actions WHERE uid=?", (target_uid,))
+        c.execute("DELETE FROM notifications WHERE uid=?", (target_uid,))
+        c.execute("DELETE FROM login_attempts WHERE username=?", (target_uid,))
+        c.execute("DELETE FROM violations WHERE uid=?", (target_uid,))
+        c.execute("DELETE FROM schedules WHERE created_by=?", (target_uid,))
         c.execute("DELETE FROM user_role WHERE uid=?", (target_uid,))
         c.execute("DELETE FROM users WHERE id=?", (target_uid,))
         conn.commit()
@@ -5265,7 +6643,8 @@ def reset_user_password():
 
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
-    c.execute("UPDATE users SET pwd=? WHERE id=?", (hashlib.md5(new_password.encode()).hexdigest(), target_uid))
+    new_hashed_password = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+    c.execute("UPDATE users SET pwd=? WHERE id=?", (new_hashed_password, target_uid))
     conn.commit()
     conn.close()
     return jsonify({'ok': 1})
@@ -5508,6 +6887,296 @@ def admin_set_system_config():
     
     return jsonify({'ok': 1, 'msg': '设置已保存'})
 
+@app.route('/admin/set_production_mode', methods=['POST'])
+def admin_set_production_mode():
+    """管理员设置生产模式（需要重启服务器生效）"""
+    uid = session.get("user")
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '未登录'})
+    
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    c.execute("SELECT role FROM user_role WHERE uid = ?", (uid,))
+    row = c.fetchone()
+    if not row or row[0] not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+        conn.close()
+        return jsonify({'ok': 0, 'msg': '无权限'})
+    conn.close()
+    
+    data = request.json or {}
+    enabled = data.get('enabled', False)
+    
+    production_file = '.production_mode'
+    
+    if enabled:
+        with open(production_file, 'w') as f:
+            f.write('true')
+        return jsonify({
+            'ok': 1, 
+            'msg': '生产模式已开启，请重启服务器使配置生效！',
+            'restart_required': True
+        })
+    else:
+        if os.path.exists(production_file):
+            os.remove(production_file)
+        return jsonify({
+            'ok': 1, 
+            'msg': '生产模式已关闭，请重启服务器使配置生效！',
+            'restart_required': True
+        })
+
+@app.route('/admin/get_production_mode', methods=['GET'])
+def admin_get_production_mode():
+    """获取当前生产模式状态"""
+    uid = session.get("user")
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '未登录'})
+    
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    c.execute("SELECT role FROM user_role WHERE uid = ?", (uid,))
+    row = c.fetchone()
+    if not row or row[0] not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+        conn.close()
+        return jsonify({'ok': 0, 'msg': '无权限'})
+    conn.close()
+    
+    # 检查当前配置
+    from config import is_production_mode
+    current_mode = is_production_mode()
+    
+    return jsonify({
+        'ok': 1,
+        'production_mode': current_mode,
+        'message': '生产模式已开启' if current_mode else '开发环境模式'
+    })
+
+@app.route('/admin/save_bg_image_url', methods=['POST'])
+def admin_save_bg_image_url():
+    """管理员保存背景图片URL"""
+    try:
+        uid = session.get("user")
+        if not uid:
+            return jsonify({'ok': 0, 'msg': '未登录'})
+        
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        c.execute("SELECT role FROM user_role WHERE uid = ?", (uid,))
+        row = c.fetchone()
+        if not row or row[0] not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '无权限'})
+        
+        data = request.json or {}
+        url = data.get('url', '').strip()
+        
+        if not url:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '请输入图片URL'})
+        
+        if not url.startswith('http://') and not url.startswith('https://'):
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '请输入有效的URL（以http://或https://开头）'})
+        
+        # 支持所有常见图片格式
+        c.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)", ('background_image', url))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'ok': 1, 'msg': '设置成功', 'url': url})
+    except Exception as e:
+        try:
+            conn.close()
+        except:
+            pass
+        return jsonify({'ok': 0, 'msg': '设置失败: ' + str(e)})
+
+@app.route('/admin/upload_bg_image_base64', methods=['POST'])
+def admin_upload_bg_image_base64():
+    """管理员上传背景图片（Base64方式）"""
+    try:
+        uid = session.get("user")
+        if not uid:
+            return jsonify({'ok': 0, 'msg': '未登录'})
+        
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        c.execute("SELECT role FROM user_role WHERE uid = ?", (uid,))
+        row = c.fetchone()
+        if not row or row[0] not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '无权限'})
+        
+        data = request.json or {}
+        image_data = data.get('image')
+        filename = data.get('filename', 'background.jpg')
+        
+        if not image_data:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '未选择文件'})
+        
+        allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+        if '.' not in filename:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '文件名格式不正确'})
+        
+        ext = filename.rsplit('.', 1)[1].lower()
+        if ext not in allowed_extensions:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '不支持的文件格式，支持：png, jpg, jpeg, gif, webp'})
+        
+        if not image_data.startswith('data:image/'):
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '图片格式不正确'})
+        
+        import base64
+        image_bytes = base64.b64decode(image_data.split(',')[1])
+        
+        # 验证文件真实内容（检查文件头）
+        image_signatures = {
+            b'\x89PNG\r\n\x1a\n': 'png',
+            b'\xff\xd8\xff': 'jpg',
+            b'\x47\x49\x46\x38': 'gif',
+            b'\x52\x49\x46\x46': 'webp'
+        }
+        
+        is_valid_image = False
+        for signature, expected_ext in image_signatures.items():
+            if image_bytes.startswith(signature):
+                if ext == expected_ext:
+                    is_valid_image = True
+                break
+        
+        if not is_valid_image:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '图片内容与扩展名不匹配，请上传真实的图片文件'})
+        
+        upload_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'bg')
+        if not os.path.exists(upload_folder):
+            os.makedirs(upload_folder)
+        
+        output_filename = 'background.' + ext
+        file_path = os.path.join(upload_folder, output_filename)
+        
+        with open(file_path, 'wb') as f:
+            f.write(image_bytes)
+        
+        if not os.path.exists(file_path):
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '文件保存失败，请检查目录权限'})
+        
+        bg_url = '/static/bg/' + output_filename
+        c.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)", ('background_image', bg_url))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'ok': 1, 'msg': '上传成功', 'url': bg_url})
+    except Exception as e:
+        try:
+            conn.close()
+        except:
+            pass
+        return jsonify({'ok': 0, 'msg': '上传失败: ' + str(e)})
+
+@app.route('/admin/upload_bg_image', methods=['POST'])
+def admin_upload_bg_image():
+    """管理员上传背景图片（FormData方式）"""
+    try:
+        uid = session.get("user")
+        if not uid:
+            return jsonify({'ok': 0, 'msg': '未登录'})
+        
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        c.execute("SELECT role FROM user_role WHERE uid = ?", (uid,))
+        row = c.fetchone()
+        if not row or row[0] not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '无权限'})
+        
+        if 'file' not in request.files:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '未选择文件'})
+        
+        file = request.files['file']
+        if file.filename == '':
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '未选择文件'})
+        
+        allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+        if '.' not in file.filename:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '文件名格式不正确'})
+        
+        ext = file.filename.rsplit('.', 1)[1].lower()
+        if ext not in allowed_extensions:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '不支持的文件格式，支持：png, jpg, jpeg, gif, webp'})
+        
+        upload_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'bg')
+        if not os.path.exists(upload_folder):
+            os.makedirs(upload_folder)
+        
+        filename = 'background.' + ext
+        file_path = os.path.join(upload_folder, filename)
+        
+        file.save(file_path)
+        
+        if not os.path.exists(file_path):
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '文件保存失败，请检查目录权限'})
+        
+        bg_url = '/static/bg/' + filename
+        c.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)", ('background_image', bg_url))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'ok': 1, 'msg': '上传成功', 'url': bg_url})
+    except Exception as e:
+        try:
+            conn.close()
+        except:
+            pass
+        return jsonify({'ok': 0, 'msg': '上传失败: ' + str(e)})
+
+@app.route('/admin/clear_bg_image', methods=['POST'])
+def admin_clear_bg_image():
+    """管理员清除背景图片"""
+    try:
+        uid = session.get("user")
+        if not uid:
+            return jsonify({'ok': 0, 'msg': '未登录'})
+        
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        c.execute("SELECT role FROM user_role WHERE uid = ?", (uid,))
+        row = c.fetchone()
+        if not row or row[0] not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '无权限'})
+        
+        c.execute("SELECT value FROM system_config WHERE key = ?", ('background_image',))
+        bg_url = c.fetchone()
+        
+        c.execute("DELETE FROM system_config WHERE key = ?", ('background_image',))
+        conn.commit()
+        conn.close()
+        
+        upload_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'bg')
+        if bg_url and bg_url[0]:
+            filename = os.path.basename(bg_url[0])
+            file_path = os.path.join(upload_folder, filename)
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        
+        return jsonify({'ok': 1, 'msg': '已清除'})
+    except Exception as e:
+        try:
+            conn.close()
+        except:
+            pass
+        return jsonify({'ok': 0, 'msg': '清除失败: ' + str(e)})
+
 # ===================== 检查档主申请状态 =====================
 @app.route('/check_op_apply', methods=['POST'])
 def check_op_apply():
@@ -5544,6 +7213,10 @@ def apply_op():
     if not uid:
         return jsonify({'ok': 0, 'msg': '未登录'})
     
+    # 检查用户是否被封禁
+    if is_user_banned(uid):
+        return jsonify({'ok': 0, 'msg': '您的账号已被封禁，无法申请成为档主！'})
+    
     role = get_user_role(uid)
     if role >= ROLE_OP:
         return jsonify({'ok': 0, 'msg': '您已经是档主了'})
@@ -5559,13 +7232,17 @@ def apply_op():
     
     data = request.json or {}
     server_ip = data.get("server_ip", "").strip()
-    qq_group = data.get("qq_group", "").strip()
+    contact = data.get("contact", "").strip()
+    
+    if not server_ip:
+        conn.close()
+        return jsonify({'ok': 0, 'msg': '请填写服务器IP地址'})
     
     try:
         c.execute('''INSERT INTO op_applications
                      (uid, server_ip, qq_group, status, created_at)
                      VALUES (?, ?, ?, 0, ?)''', 
-                  (uid, server_ip, qq_group, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                  (uid, server_ip, contact, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -5573,161 +7250,10 @@ def apply_op():
         print(f"保存申请失败: {e}")
         return jsonify({'ok': 0, 'msg': '提交失败'})
     
-    # 发送邮件通知
-    send_op_apply_notification(uid, server_ip, qq_group)
+    # 发送邮件通知管理员
+    send_op_apply_notification(uid, server_ip, contact)
     
-    return jsonify({'ok': 1, 'msg': '申请提交成功'})
-
-# ===================== 发送获取QQ的验证码 =====================
-@app.route('/send_qq_code', methods=['POST'])
-def send_qq_code():
-    uid = session.get("user")
-    if not uid:
-        return jsonify({'ok': 0, 'msg': '未登录'})
-    
-    # 获取用户邮箱
-    conn = sqlite3.connect('database.db')
-    c = conn.cursor()
-    try:
-        c.execute('''SELECT email FROM users WHERE id=?''', (uid,))
-        row = c.fetchone()
-    except Exception as e:
-        conn.close()
-        print(f"数据库查询错误: {e}")
-        return jsonify({'ok': 0, 'msg': '查询邮箱信息失败'})
-    conn.close()
-    
-    if not row or not row[0]:
-        return jsonify({'ok': 0, 'msg': '未找到您的邮箱信息'})
-    
-    user_email = row[0]
-    
-    # 检查发送间隔（5分钟内不能重复发送）
-    conn = sqlite3.connect('database.db')
-    c = conn.cursor()
-    now = datetime.now()
-    c.execute("SELECT expire FROM codes WHERE email = ?", (user_email,))
-    row = c.fetchone()
-    if row:
-        expire_time_dt = datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S')
-        time_diff = (expire_time_dt - now).total_seconds()
-        # 如果验证码还没过期（5分钟有效期），拒绝发送
-        if time_diff > 0:
-            conn.close()
-            return jsonify({'ok': 0, 'msg': '请稍后再发送验证码（5分钟内只能发送一次）'})
-    
-    # 生成验证码
-    code = rand_code()
-    
-    # 保存验证码（复用现有表）
-    try:
-        expire_time = now + timedelta(minutes=5)
-        expire_str = expire_time.strftime('%Y-%m-%d %H:%M:%S')
-        c.execute('''REPLACE INTO codes (email, code, expire) VALUES (?, ?, ?)''', 
-                  (user_email, code, expire_str))
-        conn.commit()
-    except Exception as e:
-        conn.close()
-        print(f"保存验证码错误: {e}")
-        return jsonify({'ok': 0, 'msg': '保存验证码失败'})
-    conn.close()
-    
-    # 发送验证码邮件
-    try:
-        email_content = f"""【MC档期排期站 - QQ验证】
-
-您正在申请获取服主QQ号！
-
-验证码：{code}
-
-（验证码5分钟内有效）
-
----
-此邮件由系统自动发送，请勿回复。
-"""
-        
-        msg = Message('【MC档期排期站】QQ验证',
-                      sender=app.config['MAIL_USERNAME'],
-                      recipients=[user_email])
-        msg.body = email_content
-        if use_pool and email_pool_manager:
-            success = email_pool_manager.send_message(msg)
-            if not success:
-                raise Exception("邮箱池发送失败")
-        else:
-            mail.send(msg)
-        print(f"已发送QQ验证邮件到 {user_email}")
-    except Exception as e:
-        print(f"发送QQ验证邮件失败: {e}")
-        return jsonify({'ok': 0, 'msg': '发送验证码邮件失败'})
-    
-    return jsonify({'ok': 1, 'email': user_email})
-
-# ===================== 验证并获取服主QQ号 =====================
-@app.route('/verify_and_get_qq', methods=['POST'])
-def verify_and_get_qq():
-    uid = session.get("user")
-    if not uid:
-        return jsonify({'ok': 0, 'msg': '未登录'})
-    
-    data = request.json or {}
-    code = data.get('code', '').strip()
-    
-    if not code:
-        return jsonify({'ok': 0, 'msg': '请输入验证码'})
-    
-    # 获取用户邮箱
-    conn = sqlite3.connect('database.db')
-    c = conn.cursor()
-    try:
-        c.execute('''SELECT email FROM users WHERE id=?''', (uid,))
-        row = c.fetchone()
-    except Exception as e:
-        conn.close()
-        print(f"数据库查询错误: {e}")
-        return jsonify({'ok': 0, 'msg': '查询邮箱信息失败'})
-    
-    if not row or not row[0]:
-        conn.close()
-        return jsonify({'ok': 0, 'msg': '未找到您的邮箱信息'})
-    
-    user_email = row[0]
-    
-    # 验证验证码
-    try:
-        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        c.execute('''SELECT code FROM codes WHERE email=? AND expire > ?''', (user_email, now_str))
-        row_code = c.fetchone()
-        
-        if not row_code:
-            conn.close()
-            return jsonify({'ok': 0, 'msg': '验证码错误或已过期，请重新获取'})
-        
-        stored_code = row_code[0]
-        if stored_code != code:
-            conn.close()
-            return jsonify({'ok': 0, 'msg': '验证码错误'})
-        
-        # 验证成功，删除验证码
-        c.execute('''DELETE FROM codes WHERE email=?''', (user_email,))
-        conn.commit()
-    except Exception as e:
-        conn.close()
-        print(f"验证验证码错误: {e}")
-        return jsonify({'ok': 0, 'msg': '验证码验证失败'})
-    conn.close()
-    
-    # 发送通知邮件给服主
-    try:
-        send_add_qq_notification(uid, user_email)
-    except Exception as e:
-        print(f"发送通知邮件时出错: {e}")
-    
-    return jsonify({
-        'ok': 1, 
-        'qq': '2060407846', 
-        'user_email': user_email
-    })
+    return jsonify({'ok': 1, 'msg': '申请提交成功，管理员将在24-48小时内审核，请保持邮箱畅通'})
 
 # ===================== 获取待审核的档主申请（管理员） =====================
 @app.route('/get_pending_op_applications', methods=['POST'])
@@ -5861,6 +7387,7 @@ def get_my_reservations():
 
 # 获取档期的预约列表（仅管理员查看）
 @app.route('/get_schedule_reservations', methods=['POST'])
+
 def get_schedule_reservations():
     uid = session.get("user")
     role = get_user_role(uid)
@@ -5881,10 +7408,10 @@ def get_schedule_reservations():
     
     created_by = schedule_row[0]
     
-    # 权限检查：管理员可以查看所有，档主只能查看自己创建的档期
-    if role == ROLE_ADMIN:
-        pass  # 管理员可以查看所有
-    elif role == ROLE_OP:
+    # 权限检查：管理员和最高管理员可以查看所有，档主和信用档主只能查看自己创建的档期
+    if role in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+        pass
+    elif role in (ROLE_OP, ROLE_TRUSTED_OP):
         if created_by != uid:
             conn.close()
             return jsonify({'ok': 0, 'msg': '权限不足，只能查看自己创建的档期预约列表'})
@@ -5922,6 +7449,10 @@ def create_reservation():
     if not uid:
         return jsonify({'ok': 0, 'msg': '请先登录'})
     
+    # 检查用户是否被封禁
+    if is_user_banned(uid):
+        return jsonify({'ok': 0, 'msg': '您的账号已被封禁，无法预约档期！'})
+    
     data = request.json or {}
     schedule_id = data.get("schedule_id")
     
@@ -5957,6 +7488,30 @@ def create_reservation():
         c.execute('''INSERT INTO reservations (user_id, schedule_id) VALUES (?, ?)''', (uid, schedule_id))
         reservation_id = c.lastrowid
         conn.commit()
+        
+        # 检查是否已获得预约奖励（只奖励一次）
+        c.execute("SELECT COUNT(*) FROM point_transactions WHERE uid=? AND description='预约档期奖励'", (uid,))
+        if c.fetchone()[0] == 0:
+            add_user_points(uid, 20, '预约档期奖励', reservation_id)
+        
+        # 发送预约成功通知
+        send_notification(uid, "✅ 预约成功", 
+                         f"""恭喜您成功预约了档期！
+
+📅 档期信息：
+• 日期：{year}年{month}月{day}日
+• 时间：{time_str}
+• 服务器ID：{server_id}
+• 服务器IP：{ip}
+
+💡 温馨提示：
+• 开服前我们会通过邮件提醒您
+• 请准时参加，不要错过
+• 如需取消预约，请前往个人中心
+
+祝您游戏愉快！
+""", 'reservation_success')
+        
         conn.close()
         
         # 解析开服时间
@@ -6007,6 +7562,10 @@ def cancel_reservation():
     if not uid:
         return jsonify({'ok': 0, 'msg': '请先登录'})
     
+    # 检查用户是否被封禁
+    if is_user_banned(uid):
+        return jsonify({'ok': 0, 'msg': '您的账号已被封禁，无法取消预约！'})
+    
     data = request.json or {}
     reservation_id = data.get("reservation_id")
     
@@ -6023,6 +7582,18 @@ def cancel_reservation():
         # 删除预约
         c.execute('''DELETE FROM reservations WHERE id=?''', (reservation_id,))
         conn.commit()
+        
+        # 发送取消预约通知
+        send_notification(uid, "📌 预约已取消", 
+                         f"""您的预约已成功取消。
+
+💡 温馨提示：
+• 如需重新预约，请前往档期列表
+• 建议您提前关注档期信息，不要错过
+
+感谢您的使用！
+""", 'reservation_cancel')
+        
         conn.close()
         
         # 取消定时任务
@@ -6059,55 +7630,61 @@ def check_reservation():
     
     return jsonify({'ok': 1, 'reserved': row is not None})
 
-# ===================== 发送提醒邮件 =====================
+# ===================== 发送提醒通知 =====================
 def send_reservation_reminder(to_email, user_id, schedule_info):
     try:
-        subject = "【MC档期排期站】服务器开服提醒"
-        email_content = f"""亲爱的 {user_id}：
-
-您预约的服务器即将开服！
+        inbox_enabled = get_notification_setting('reservation_reminder', 'inbox')
+        email_enabled = get_notification_setting('reservation_reminder', 'email')
+        
+        if not inbox_enabled and not email_enabled:
+            print(f"[通知] 预约提醒通知已全部禁用")
+            return True
+        
+        notif_content = f"""您预约的服务器即将开服！
 
 🎮 服务器：{schedule_info['server_id']}
 📅 日期：{schedule_info['year']}年{schedule_info['month']}月{schedule_info['day']}日
 🕐 时段：{schedule_info['time']}"""
         
         if schedule_info.get('ip'):
-            email_content += f"\n🌐 IP地址：{schedule_info['ip']}"
+            notif_content += f"\n🌐 IP地址：{schedule_info['ip']}"
         
         if schedule_info.get('contact_type') and schedule_info.get('contact_value'):
-            # 显示联系方式
             contact_label = {
                 'qq': 'QQ号',
                 'wechat': '微信号',
                 'phone': '手机号',
                 'email': '邮箱'
             }.get(schedule_info['contact_type'], '联系方式')
-            email_content += f"\n📞 {contact_label}：{schedule_info['contact_value']}"
+            notif_content += f"\n📞 {contact_label}：{schedule_info['contact_value']}"
         
-        email_content += """
+        notif_content += "\n\n祝您游戏愉快！"
+        
+        if inbox_enabled:
+            create_inbox_notification(user_id, "🔔 服务器开服提醒", notif_content, 'reservation_reminder')
+        
+        if email_enabled and to_email:
+            email_content = f"""亲爱的 {user_id}：
 
-祝您游戏愉快！
+{notif_content}
 
 ---
 此邮件由系统自动发送，请勿回复。
 """
-        
-        if use_pool and email_pool_manager:
-            success = email_pool_manager.send_direct([to_email], subject, email_content)
-            if success:
+            if use_pool and email_pool_manager:
+                success = email_pool_manager.send_direct([to_email], "【MC档期排期站】服务器开服提醒", email_content)
+                if success:
+                    print(f"[SUCCESS] 已发送预约提醒邮件到 {to_email}")
+            else:
+                msg = Message("【MC档期排期站】服务器开服提醒",
+                             sender=app.config['MAIL_USERNAME'],
+                             recipients=[to_email])
+                msg.body = email_content
+                mail.send(msg)
                 print(f"[SUCCESS] 已发送预约提醒邮件到 {to_email}")
-                return True
-        else:
-            msg = Message(subject,
-                         sender=app.config['MAIL_USERNAME'],
-                         recipients=[to_email])
-            msg.body = email_content
-            mail.send(msg)
-            print(f"[SUCCESS] 已发送预约提醒邮件到 {to_email}")
-            return True
-        return False
+        return True
     except Exception as e:
-        print(f"[ERROR] 发送预约提醒邮件失败: {e}")
+        print(f"[ERROR] 发送预约提醒通知失败: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -6248,7 +7825,9 @@ def restore_reservation_jobs():
                         'day': day,
                         'time': time_str,
                         'server_id': server_id,
-                        'ip': ip
+                        'ip': ip,
+                        'contact_type': contact_type,
+                        'contact_value': contact_value
                     }
                     
                     scheduler.add_job(
@@ -6384,12 +7963,35 @@ def forum_create_comment():
     if is_muted:
         return jsonify({"ok": 0, "msg": f"您已被禁言，无法发表评论！原因: {mute_info["reason"]}"})
     
+    # 检查用户是否被封禁
+    if is_user_banned(uid):
+        return jsonify({"ok": 0, "msg": "您的账号已被封禁，无法发表评论！"})
+    
     data = request.json or {}
     content = data.get("content", "").strip()
     
     if not content:
         return jsonify({"ok": 0, "msg": "评论内容不能为空！"})
-
+    
+    # 检查每日发言次数限制
+    conn = sqlite3.connect("database.db")
+    c = conn.cursor()
+    
+    today = datetime.now().strftime('%Y-%m-%d')
+    c.execute("SELECT COUNT(*) FROM forum_comments WHERE uid = ? AND DATE(created_at) = ?", (uid, today))
+    today_count = c.fetchone()[0]
+    
+    role = get_user_role(uid)
+    max_comments_per_day = 20
+    if role >= ROLE_ADMIN:
+        max_comments_per_day = 100
+    
+    if today_count >= max_comments_per_day:
+        conn.close()
+        return jsonify({"ok": 0, "msg": f"今日发言次数已达上限（{max_comments_per_day}条），请明日再试！"})
+    
+    conn.close()
+    
     # 执行内容审核
     moderation_result = perform_content_moderation(content)
     if moderation_result["action"] == "block":
@@ -6420,6 +8022,22 @@ def forum_create_comment():
               (uid, content, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     comment_id = c.lastrowid
+    
+    # 检查今天是否已获得评论奖励（每天一次）
+    today = datetime.now().strftime('%Y-%m-%d')
+    c.execute("SELECT last_comment_reward FROM user_points WHERE uid=?", (uid,))
+    row = c.fetchone()
+    if row:
+        last_reward = row[0] or ''
+        if last_reward != today:
+            add_user_points(uid, 10, '发表评论奖励', comment_id)
+            c.execute("UPDATE user_points SET last_comment_reward=? WHERE uid=?", (today, uid))
+            conn.commit()
+    else:
+        add_user_points(uid, 10, '发表评论奖励', comment_id)
+        c.execute("INSERT INTO user_points (uid, points, total_earned, total_spent, last_comment_reward) VALUES (?, 0, 0, 0, ?)", (uid, today))
+        conn.commit()
+    
     conn.close()
     
     return jsonify({"ok": 1, "comment_id": comment_id, "msg": "评论发表成功！"})
@@ -6568,7 +8186,6 @@ def admin_import_keywords():
             try:
                 c.execute("INSERT INTO keywords (word) VALUES (?)", (word,))
                 added_count += 1
-                add_sensitive_word(word)  # 更新缓存
             except:
                 skipped_count += 1
         else:
@@ -6576,6 +8193,8 @@ def admin_import_keywords():
     
     conn.commit()
     conn.close()
+    
+    load_sensitive_words()
     
     print(f"[敏感词过滤] 批量导入完成: 新增 {added_count} 个, 跳过 {skipped_count} 个")
     
@@ -6628,17 +8247,85 @@ def admin_delete_keyword():
 
 # ==================== 关键词过滤辅助函数 ====================
 def check_for_keywords(content):
-    """检查内容是否包含敏感词"""
+    """检查内容是否包含敏感词（增强版，支持智能检测）"""
     if not content or not content.strip():
         return False
     
     content_lower = content.lower()
     
-    # 首先检查内存中的缓存
     for keyword in _sensitive_words_cache:
         if keyword in content_lower:
-            print(f"[敏感词过滤] 检测到敏感词: {keyword}")
+            log_security(request.remote_addr if hasattr(request, 'remote_addr') else '-', 
+                        'KEYWORD_DETECTED', 'NORMAL', detail=f'检测到敏感词: {keyword}')
             return True
+    
+    content_chars = ''.join([c for c in content_lower if c != ' ' and c != '\n' and c != '\t'])
+    for keyword in _sensitive_words_cache:
+        if len(keyword) == 1:
+            if keyword in content_lower:
+                log_security(request.remote_addr if hasattr(request, 'remote_addr') else '-', 
+                            'KEYWORD_DETECTED', 'SINGLE_CHAR', detail=f'检测到敏感字: {keyword}')
+                return True
+        elif len(keyword) <= 4:
+            keyword_chars = set(keyword)
+            content_char_set = set(content_chars)
+            if keyword_chars.issubset(content_char_set):
+                pos = 0
+                match_count = 0
+                for c in content_chars:
+                    if pos < len(keyword) and c == keyword[pos]:
+                        match_count += 1
+                        pos += 1
+                    elif pos > 0 and c != keyword[pos-1]:
+                        pos += 0
+                if match_count == len(keyword):
+                    log_security(request.remote_addr if hasattr(request, 'remote_addr') else '-', 
+                                'KEYWORD_DETECTED', 'SPLIT', detail=f'检测到拆分敏感词: {keyword}')
+                    return True
+    
+    import re
+    qq_pattern = r'\b[1-9][0-9]{4,10}\b'
+    qq_matches = re.findall(qq_pattern, content)
+    if qq_matches:
+        log_security(request.remote_addr if hasattr(request, 'remote_addr') else '-', 
+                    'KEYWORD_DETECTED', 'QQ_NUMBER', detail=f'检测到QQ号: {qq_matches}')
+        return True
+    
+    wechat_pattern = r'[a-zA-Z][a-zA-Z0-9_-]{5,19}'
+    wechat_matches = re.findall(wechat_pattern, content)
+    if wechat_matches:
+        common_words = {'the', 'and', 'that', 'with', 'this', 'will', 'your', 'from', 'they', 'have', 
+                       'what', 'there', 'their', 'about', 'which', 'when', 'were', 'been', 'some',
+                       'time', 'could', 'would', 'make', 'than', 'first', 'any', 'these', 'give',
+                       'them', 'many', 'then', 'look', 'only', 'come', 'its', 'over', 'think',
+                       'also', 'back', 'after', 'use', 'two', 'how', 'our', 'work', 'well', 'way',
+                       'even', 'new', 'want', 'because', 'most', 'through', 'just', 'small',
+                       'found', 'may', 'still', 'each', 'great', 'good', 'different', 'between',
+                       'under', 'never', 'last', 'little', 'world', 'own', 'right', 'know', 'take',
+                       'people', 'into', 'year', 'could', 'must', 'while', 'before', 'through',
+                       'always', 'though', 'around', 'place', 'against', 'each', 'those', 'she',
+                       'long', 'such', 'great', 'being', 'might', 'house', 'both', 'should',
+                       'during', 'without', 'number', 'however', 'anything', 'together', 'system',
+                       'another', 'little', 'could', 'might', 'through', 'right', 'school', 'never',
+                       'just', 'between', 'around', 'every', 'thing', 'where', 'were', 'world',
+                       'which', 'while', 'house', 'always', 'little', 'system', 'should', 'place'}
+        for match in wechat_matches:
+            if match.lower() not in common_words:
+                log_security(request.remote_addr if hasattr(request, 'remote_addr') else '-', 
+                            'KEYWORD_DETECTED', 'WECHAT_ID', detail=f'检测到疑似微信号: {match}')
+                return True
+    
+    drain_keywords = ['群', '加', '裙', '拉', '进', 'vx', 'wx', '微信', 'qq', '联系方式', '私信']
+    for kw in drain_keywords:
+        if kw in content_lower:
+            for i, c in enumerate(content_lower):
+                if c == kw:
+                    prev_char = content_lower[i-1] if i > 0 else ''
+                    next_char = content_lower[i+1] if i < len(content_lower)-1 else ''
+                    if prev_char.isdigit() or next_char.isdigit() or prev_char.isalpha() or next_char.isalpha():
+                        log_security(request.remote_addr if hasattr(request, 'remote_addr') else '-', 
+                                    'KEYWORD_DETECTED', 'DRAIN', detail=f'检测到引流词+联系方式组合: {kw}')
+                        return True
     
     return False
 
@@ -6721,13 +8408,39 @@ def schedule_forum_create_comment():
     if is_muted:
         return jsonify({"ok": 0, "msg": f"您已被禁言，无法发表评论！原因: {mute_info["reason"]}"})
     
+    # 检查用户是否被封禁
+    if is_user_banned(uid):
+        return jsonify({"ok": 0, "msg": "您的账号已被封禁，无法发表评论！"})
+    
     data = request.json or {}
     schedule_id = data.get("schedule_id")
     content = data.get("content", "").strip()
     
     if not schedule_id or not content:
         return jsonify({"ok": 0, "msg": "评论内容或档期ID不能为空！"})
-
+    
+    # 检查每日发言次数限制（与主评论区共享计数）
+    conn = sqlite3.connect("database.db")
+    c = conn.cursor()
+    
+    today = datetime.now().strftime('%Y-%m-%d')
+    c.execute("SELECT COUNT(*) FROM forum_comments WHERE uid = ? AND DATE(created_at) = ?", (uid, today))
+    forum_count = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM schedule_comments WHERE uid = ? AND DATE(created_at) = ?", (uid, today))
+    schedule_count = c.fetchone()[0]
+    today_total = forum_count + schedule_count
+    
+    role = get_user_role(uid)
+    max_comments_per_day = 20
+    if role >= ROLE_ADMIN:
+        max_comments_per_day = 100
+    
+    if today_total >= max_comments_per_day:
+        conn.close()
+        return jsonify({"ok": 0, "msg": f"今日发言次数已达上限（{max_comments_per_day}条），请明日再试！"})
+    
+    conn.close()
+    
     # 执行内容审核
     moderation_result = perform_content_moderation(content)
     if moderation_result["action"] == "block":
@@ -6758,6 +8471,22 @@ def schedule_forum_create_comment():
               (schedule_id, uid, content, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     comment_id = c.lastrowid
+    
+    # 检查今天是否已获得评论奖励（每天一次）
+    today = datetime.now().strftime('%Y-%m-%d')
+    c.execute("SELECT last_comment_reward FROM user_points WHERE uid=?", (uid,))
+    row = c.fetchone()
+    if row:
+        last_reward = row[0] or ''
+        if last_reward != today:
+            add_user_points(uid, 10, '发表评论奖励', comment_id)
+            c.execute("UPDATE user_points SET last_comment_reward=? WHERE uid=?", (today, uid))
+            conn.commit()
+    else:
+        add_user_points(uid, 10, '发表评论奖励', comment_id)
+        c.execute("INSERT INTO user_points (uid, points, total_earned, total_spent, last_comment_reward) VALUES (?, 0, 0, 0, ?)", (uid, today))
+        conn.commit()
+    
     conn.close()
     
     return jsonify({"ok": 1, "comment_id": comment_id, "msg": "评论发表成功！"})
@@ -7245,11 +8974,44 @@ def check_update():
     try:
         import os
         
-        # 从配置获取远程仓库地址
-        remote_repo_url = app.config.get('REMOTE_REPO_URL', 'https://github.com/WEIWU-001/MC-Schedule.git')
-        default_branch = app.config.get('DEFAULT_BRANCH', 'master')
+        source_id = request.form.get('source_id', '')
         
-        # 获取当前版本（从git）
+        remote_repo_url = app.config.get('REMOTE_REPO_URL', 'https://github.com/WEIWU-001/MC-Schedule.git')
+        default_branch = app.config.get('DEFAULT_BRANCH', 'main')
+        update_sources = app.config.get('UPDATE_SOURCES', [])
+        github_mirrors = app.config.get('GITHUB_MIRRORS', [
+            'https://github.com',
+            'https://ghproxy.com/https://github.com',
+            'https://mirror.ghproxy.com/https://github.com',
+            'https://github.moeyy.xyz',
+            'https://ghproxy.net/https://github.com',
+            'https://gitproxy.com/https://github.com',
+            'https://hub.fastgit.xyz',
+            'https://gitclone.com/github.com',
+            'https://github.bajins.com',
+            'https://github.xmcp.ml'
+        ])
+        
+        http_proxy = app.config.get('HTTP_PROXY', '')
+        https_proxy = app.config.get('HTTPS_PROXY', '')
+        
+        if http_proxy:
+            os.environ['HTTP_PROXY'] = http_proxy
+            os.environ['http_proxy'] = http_proxy
+        if https_proxy:
+            os.environ['HTTPS_PROXY'] = https_proxy
+            os.environ['https_proxy'] = https_proxy
+        
+        os.system('git config --global http.sslVerify false >nul 2>&1')
+        
+        if http_proxy or https_proxy:
+            proxy_url = https_proxy if https_proxy else http_proxy
+            os.system(f'git config --global http.proxy {proxy_url} >nul 2>&1')
+            os.system(f'git config --global https.proxy {proxy_url} >nul 2>&1')
+        else:
+            os.system('git config --global --unset http.proxy >nul 2>&1')
+            os.system('git config --global --unset https.proxy >nul 2>&1')
+        
         try:
             with os.popen('git rev-parse HEAD') as f:
                 current_commit = f.read().strip()
@@ -7261,36 +9023,119 @@ def check_update():
             current_commit = '未知'
             current_branch = default_branch
         
-        # 检查远程仓库更新
-        try:
-            # 添加/更新远程仓库
-            os.system('git remote remove origin >nul 2>&1')
-            os.system(f'git remote add origin {remote_repo_url} >nul 2>&1')
-            os.system('git fetch origin >nul 2>&1')
+        remote_commit = None
+        used_mirror = None
+        
+        def try_fetch(repo_url, mirror_name):
+            nonlocal remote_commit, used_mirror
+            try:
+                os.system('git remote remove origin >nul 2>&1')
+                os.system(f'git remote add origin {repo_url} >nul 2>&1')
+                
+                import subprocess
+                import threading
+                
+                result_container = {'stdout': '', 'stderr': '', 'returncode': None}
+                
+                def fetch_task():
+                    try:
+                        proc = subprocess.Popen(
+                            ['git', 'ls-remote', '--heads', 'origin', current_branch],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                            timeout=30
+                        )
+                        stdout, stderr = proc.communicate(timeout=30)
+                        result_container['stdout'] = stdout.strip()
+                        result_container['stderr'] = stderr.strip()
+                        result_container['returncode'] = proc.returncode
+                    except subprocess.TimeoutExpired:
+                        result_container['stderr'] = 'Timeout'
+                    except Exception as e:
+                        result_container['stderr'] = str(e)
+                
+                fetch_thread = threading.Thread(target=fetch_task)
+                fetch_thread.daemon = True
+                fetch_thread.start()
+                fetch_thread.join(timeout=35)
+                
+                if result_container['stdout']:
+                    remote_line = result_container['stdout']
+                    remote_commit = remote_line.split()[0]
+                    used_mirror = mirror_name
+                    return True
+            except:
+                pass
+            return False
+        
+        if source_id:
+            selected_source = next((s for s in update_sources if s['id'] == source_id), None)
+            if selected_source:
+                if selected_source['type'] == 'direct' and selected_source['id'] == 'gitee':
+                    try_fetch(remote_repo_url, 'Gitee')
+                elif selected_source['type'] == 'mirror' and selected_source['url']:
+                    mirror_repo_url = remote_repo_url.replace('https://github.com', selected_source['url'])
+                    try_fetch(mirror_repo_url, selected_source['name'])
+        else:
+            is_gitee = 'gitee.com' in remote_repo_url
             
-            with os.popen(f'git rev-parse origin/{current_branch}') as f:
-                remote_commit = f.read().strip()
+            if is_gitee:
+                try_fetch(remote_repo_url, 'Gitee')
             
-            has_update = current_commit != remote_commit
+            if not remote_commit and not is_gitee:
+                for mirror in github_mirrors:
+                    mirror_repo_url = remote_repo_url.replace('https://github.com', mirror)
+                    if try_fetch(mirror_repo_url, mirror):
+                        break
+        
+        if not remote_commit:
+            error_details = []
+            if source_id:
+                selected_source = next((s for s in update_sources if s['id'] == source_id), None)
+                if selected_source:
+                    error_details.append(f"• {selected_source['name']} - 连接超时或失败")
+            else:
+                is_gitee = 'gitee.com' in remote_repo_url
+                if is_gitee:
+                    error_details.append(f"• Gitee - 连接超时或失败")
+                for mirror in github_mirrors:
+                    mirror_name = mirror.replace('https://', '')
+                    error_details.append(f"• {mirror_name} - 连接超时或失败")
             
-            # 获取更新日志
-            if has_update:
+            proxy_hint = ""
+            if not http_proxy and not https_proxy:
+                proxy_hint = "\n\n💡 建议：在服务器环境变量中配置代理（如 HTTP_PROXY=http://127.0.0.1:7890）"
+            
+            return jsonify({
+                'ok': 0,
+                'msg': '无法连接到更新源，请检查网络或尝试使用代理服务器',
+                'detail': '所有更新源均无法访问：\n' + '\n'.join(error_details) + proxy_hint
+            })
+        
+        os.system(f'git remote remove origin >nul 2>&1')
+        os.system(f'git remote add origin {remote_repo_url} >nul 2>&1')
+        
+        has_update = current_commit != remote_commit
+        
+        update_log = []
+        if has_update:
+            try:
                 with os.popen(f'git log --oneline {current_commit}..origin/{current_branch} -n 10') as f:
                     log_output = f.read().strip()
                 update_log = log_output.split('\n') if log_output else []
-            else:
+            except:
                 update_log = []
-        except Exception as e:
-            return jsonify({'ok': 0, 'msg': f'检查更新失败: {str(e)}'})
         
         return jsonify({
             'ok': 1,
             'data': {
-                'current_version': current_commit[:7] if current_commit != '未知' else '未知',
+                'current_version': current_commit[:7] if current_commit and current_commit != '未知' else '未知',
                 'current_branch': current_branch,
                 'has_update': has_update,
-                'latest_version': remote_commit[:7] if has_update else current_commit[:7] if current_commit != '未知' else '未知',
-                'update_log': update_log
+                'latest_version': remote_commit[:7] if remote_commit else '未知',
+                'update_log': update_log,
+                'used_mirror': used_mirror
             }
         })
     except Exception as e:
@@ -7310,36 +9155,304 @@ def do_update():
     try:
         import os
         
-        # 从配置获取远程仓库地址
+        source_id = request.form.get('source_id', '')
+        
         remote_repo_url = app.config.get('REMOTE_REPO_URL', 'https://github.com/WEIWU-001/MC-Schedule.git')
-        default_branch = app.config.get('DEFAULT_BRANCH', 'master')
+        default_branch = app.config.get('DEFAULT_BRANCH', 'main')
+        update_sources = app.config.get('UPDATE_SOURCES', [])
+        github_mirrors = app.config.get('GITHUB_MIRRORS', [
+            'https://github.com',
+            'https://ghproxy.com/https://github.com',
+            'https://mirror.ghproxy.com/https://github.com',
+            'https://github.moeyy.xyz',
+            'https://ghproxy.net/https://github.com',
+            'https://gitproxy.com/https://github.com',
+            'https://hub.fastgit.xyz',
+            'https://gitclone.com/github.com',
+            'https://github.bajins.com',
+            'https://github.xmcp.ml'
+        ])
         
-        # 更新远程仓库地址并拉取最新代码
-        os.system('git remote remove origin >nul 2>&1')
-        os.system(f'git remote add origin {remote_repo_url} >nul 2>&1')
-        exit_code = os.system(f'git pull origin {default_branch} >git_pull_output.txt 2>&1')
+        http_proxy = app.config.get('HTTP_PROXY', '')
+        https_proxy = app.config.get('HTTPS_PROXY', '')
         
-        with open('git_pull_output.txt', 'r', encoding='utf-8', errors='ignore') as f:
-            output = f.read()
+        if http_proxy:
+            os.environ['HTTP_PROXY'] = http_proxy
+            os.environ['http_proxy'] = http_proxy
+        if https_proxy:
+            os.environ['HTTPS_PROXY'] = https_proxy
+            os.environ['https_proxy'] = https_proxy
         
-        if exit_code == 0:
-            # 获取更新后的版本
-            with os.popen('git rev-parse HEAD') as f:
-                current_commit = f.read().strip()
-            
-            return jsonify({
-                'ok': 1,
-                'msg': '更新成功！请重启服务器以应用更改',
-                'new_version': current_commit[:7],
-                'output': output
-            })
+        os.system('git config --global http.sslVerify false >nul 2>&1')
+        
+        if http_proxy or https_proxy:
+            proxy_url = https_proxy if https_proxy else http_proxy
+            os.system(f'git config --global http.proxy {proxy_url} >nul 2>&1')
+            os.system(f'git config --global https.proxy {proxy_url} >nul 2>&1')
         else:
+            os.system('git config --global --unset http.proxy >nul 2>&1')
+            os.system('git config --global --unset https.proxy >nul 2>&1')
+        
+        used_mirror = None
+        output = ''
+        
+        def try_pull(repo_url, mirror_name):
+            nonlocal used_mirror, output
+            try:
+                os.system('git remote remove origin >nul 2>&1')
+                os.system(f'git remote add origin {repo_url} >nul 2>&1')
+                
+                exit_code = os.system(f'git pull origin {default_branch} >git_pull_output.txt 2>&1')
+                
+                with open('git_pull_output.txt', 'r', encoding='utf-8', errors='ignore') as f:
+                    output = f.read()
+                
+                if exit_code == 0:
+                    used_mirror = mirror_name
+                    return True
+            except:
+                pass
+            return False
+        
+        if source_id:
+            selected_source = next((s for s in update_sources if s['id'] == source_id), None)
+            if selected_source:
+                if selected_source['type'] == 'direct' and selected_source['id'] == 'gitee':
+                    try_pull(remote_repo_url, 'Gitee')
+                elif selected_source['type'] == 'mirror' and selected_source['url']:
+                    mirror_repo_url = remote_repo_url.replace('https://github.com', selected_source['url'])
+                    try_pull(mirror_repo_url, selected_source['name'])
+        else:
+            is_gitee = 'gitee.com' in remote_repo_url
+            
+            if is_gitee:
+                try_pull(remote_repo_url, 'Gitee')
+            
+            if not used_mirror:
+                for mirror in github_mirrors:
+                    mirror_repo_url = remote_repo_url.replace('https://github.com', mirror)
+                    if try_pull(mirror_repo_url, mirror):
+                        break
+        
+        if not used_mirror:
+            try:
+                with open('git_pull_output.txt', 'r', encoding='utf-8', errors='ignore') as f:
+                    output = f.read()
+            except:
+                output = ''
             return jsonify({
                 'ok': 0,
-                'msg': f'更新失败: {output}'
+                'msg': f'所有更新源均无法连接，更新失败: {output}'
             })
+        
+        with os.popen('git rev-parse HEAD') as f:
+            current_commit = f.read().strip()
+        
+        return jsonify({
+            'ok': 1,
+            'msg': '更新成功！请重启服务器以应用更改',
+            'new_version': current_commit[:7],
+            'output': output,
+            'used_mirror': used_mirror
+        })
     except Exception as e:
         return jsonify({'ok': 0, 'msg': f'更新失败: {str(e)}'})
+
+# 手动上传更新包（无需GitHub）
+@app.route('/admin/upload_update', methods=['POST'])
+def upload_update():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    role = get_user_role(uid)
+    if role < ROLE_SUPER_ADMIN:
+        return jsonify({'ok': 0, 'msg': '权限不足（仅最高管理员可用）'})
+    
+    try:
+        import os
+        import shutil
+        import zipfile
+        
+        if 'update_file' not in request.files:
+            return jsonify({'ok': 0, 'msg': '请选择更新包文件'})
+        
+        file = request.files['update_file']
+        if file.filename == '':
+            return jsonify({'ok': 0, 'msg': '请选择更新包文件'})
+        
+        if not file.filename.lower().endswith('.zip'):
+            return jsonify({'ok': 0, 'msg': '仅支持 ZIP 格式的更新包'})
+        
+        temp_dir = 'update_temp'
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+        os.makedirs(temp_dir)
+        
+        zip_path = os.path.join(temp_dir, file.filename)
+        file.save(zip_path)
+        
+        if not zipfile.is_zipfile(zip_path):
+            shutil.rmtree(temp_dir)
+            return jsonify({'ok': 0, 'msg': '无效的 ZIP 文件'})
+        
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(temp_dir)
+        
+        extracted_items = os.listdir(temp_dir)
+        if len(extracted_items) == 1 and os.path.isdir(os.path.join(temp_dir, extracted_items[0])):
+            content_dir = os.path.join(temp_dir, extracted_items[0])
+        else:
+            content_dir = temp_dir
+        
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        
+        exclude_dirs = ['logs', 'database.db', '__pycache__', '.git', 'node_modules']
+        exclude_files = ['update_temp', '.env', '.production_mode']
+        
+        updated_files = []
+        for root, dirs, files in os.walk(content_dir):
+            dirs[:] = [d for d in dirs if d not in exclude_dirs]
+            for filename in files:
+                if filename in exclude_files:
+                    continue
+                
+                src_path = os.path.join(root, filename)
+                rel_path = os.path.relpath(src_path, content_dir)
+                dst_path = os.path.join(project_root, rel_path)
+                
+                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                shutil.copy2(src_path, dst_path)
+                updated_files.append(rel_path)
+        
+        shutil.rmtree(temp_dir)
+        
+        log_security(get_client_ip(), 'SYSTEM_UPDATE', 'UPLOAD', user_id=uid, detail=f'手动上传更新包，更新文件数: {len(updated_files)}')
+        
+        return jsonify({
+            'ok': 1,
+            'msg': '更新包上传成功！请重启服务器以应用更改',
+            'updated_files': len(updated_files),
+            'files': updated_files[:20]
+        })
+    except Exception as e:
+        import traceback
+        log_security(get_client_ip(), 'SYSTEM_UPDATE', 'UPLOAD_FAILED', user_id=uid, detail=f'手动上传更新包失败: {str(e)}', level='ERROR')
+        logger.error(f"手动上传更新包失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({'ok': 0, 'msg': f'更新失败: {str(e)}'})
+
+# 测试更新源速度
+@app.route('/admin/test_update_sources', methods=['POST'])
+def test_update_sources():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    role = get_user_role(uid)
+    if role < ROLE_SUPER_ADMIN:
+        return jsonify({'ok': 0, 'msg': '权限不足（仅最高管理员可用）'})
+    
+    try:
+        import time
+        import urllib.request
+        import urllib.error
+        
+        update_sources = app.config.get('UPDATE_SOURCES', [])
+        remote_repo_url = app.config.get('REMOTE_REPO_URL', '')
+        
+        results = []
+        
+        for source in update_sources:
+            source_id = source['id']
+            source_name = source['name']
+            source_type = source['type']
+            source_url = source['url']
+            
+            start_time = time.time()
+            success = False
+            latency = -1
+            error = None
+            
+            try:
+                if source_type == 'mirror' and source_url:
+                    base_url = source_url.split('/https://github.com')[0]
+                    if base_url.endswith('/'):
+                        base_url = base_url[:-1]
+                    
+                    test_url = base_url
+                    req = urllib.request.Request(test_url, method='GET')
+                    req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+                    req.add_header('Accept', '*/*')
+                    
+                    try:
+                        with urllib.request.urlopen(req, timeout=15) as resp:
+                            resp.read(1024)
+                            latency = int((time.time() - start_time) * 1000)
+                            success = resp.status >= 200 and resp.status < 500
+                    except urllib.error.HTTPError as e:
+                        if e.code == 404 or e.code == 403:
+                            latency = int((time.time() - start_time) * 1000)
+                            success = True
+                        else:
+                            error = f'HTTP {e.code}'
+                    except urllib.error.URLError as e:
+                        error = str(e.reason)
+                    except Exception as e:
+                        error = str(e)
+                elif source_type == 'direct' and source_id == 'gitee':
+                    if 'gitee.com' in remote_repo_url:
+                        test_url = 'https://gitee.com'
+                        req = urllib.request.Request(test_url, method='GET')
+                        req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+                        req.add_header('Accept', '*/*')
+                        
+                        try:
+                            with urllib.request.urlopen(req, timeout=15) as resp:
+                                resp.read(1024)
+                                latency = int((time.time() - start_time) * 1000)
+                                success = resp.status >= 200 and resp.status < 500
+                        except urllib.error.HTTPError as e:
+                            if e.code == 404 or e.code == 403:
+                                latency = int((time.time() - start_time) * 1000)
+                                success = True
+                            else:
+                                error = f'HTTP {e.code}'
+                        except urllib.error.URLError as e:
+                            error = str(e.reason)
+                        except Exception as e:
+                            error = str(e)
+                    else:
+                        success = False
+                        error = '未配置Gitee仓库'
+                else:
+                    continue
+            except Exception as e:
+                error = str(e)
+            
+            results.append({
+                'id': source_id,
+                'name': source_name,
+                'type': source_type,
+                'url': source_url,
+                'success': success,
+                'latency': latency,
+                'error': error
+            })
+        
+        results.sort(key=lambda x: (not x['success'], x['latency'] if x['success'] else float('inf')))
+        
+        return jsonify({
+            'ok': 1,
+            'results': results,
+            'total_tests': len(results),
+            'success_count': sum(1 for r in results if r['success'])
+        })
+    except Exception as e:
+        import traceback
+        logger.error(f"测试更新源速度失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({'ok': 0, 'msg': f'测试失败: {str(e)}'})
 
 # 获取统计数据
 @app.route('/admin/data/stats', methods=['POST'])
@@ -7545,6 +9658,510 @@ def delete_feedback():
         return jsonify({'ok': 1, 'msg': '删除成功'})
     except Exception as e:
         return jsonify({'ok': 0, 'msg': f'删除失败: {str(e)}'})
+
+# ==================== 积分系统API ====================
+
+def add_user_points(uid, points, description, related_id=None):
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        
+        c.execute('SELECT points, total_earned FROM user_points WHERE uid = ?', (uid,))
+        row = c.fetchone()
+        
+        if row:
+            new_points = row[0] + points
+            new_total_earned = row[1] + points
+            c.execute('UPDATE user_points SET points = ?, total_earned = ?, updated_at = CURRENT_TIMESTAMP WHERE uid = ?',
+                      (new_points, new_total_earned, uid))
+        else:
+            c.execute('INSERT INTO user_points (uid, points, total_earned, total_spent) VALUES (?, ?, ?, 0)',
+                      (uid, points, points))
+        
+        c.execute('INSERT INTO point_transactions (uid, type, points, description, related_id) VALUES (?, ?, ?, ?, ?)',
+                  (uid, 'earn', points, description, related_id))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f'[积分] 添加积分失败: {e}')
+        return False
+
+# 获取用户积分
+@app.route('/api/points', methods=['POST'])
+def get_user_points():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        
+        c.execute('SELECT points, total_earned, total_spent, last_checkin, checkin_streak FROM user_points WHERE uid = ?', (uid,))
+        row = c.fetchone()
+        
+        if not row:
+            c.execute('INSERT INTO user_points (uid, points, total_earned, total_spent, last_checkin, checkin_streak) VALUES (?, 0, 0, 0, "", 0)', (uid,))
+            conn.commit()
+            points, total_earned, total_spent, last_checkin, checkin_streak = 0, 0, 0, '', 0
+        else:
+            points, total_earned, total_spent, last_checkin, checkin_streak = row
+        
+        conn.close()
+        
+        return jsonify({
+            'ok': 1,
+            'data': {
+                'points': points,
+                'total_earned': total_earned,
+                'total_spent': total_spent,
+                'last_checkin': last_checkin or '',
+                'checkin_streak': checkin_streak or 0
+            }
+        })
+    except Exception as e:
+        return jsonify({'ok': 0, 'msg': f'获取积分失败: {str(e)}'})
+
+# 获取积分记录
+@app.route('/api/points/history', methods=['POST'])
+def get_points_history():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        
+        c.execute('''SELECT type, points, description, created_at 
+                      FROM point_transactions 
+                      WHERE uid = ? 
+                      ORDER BY created_at DESC 
+                      LIMIT 50''', (uid,))
+        
+        history = []
+        for row in c.fetchall():
+            history.append({
+                'type': row[0],
+                'points': row[1],
+                'description': row[2],
+                'created_at': row[3]
+            })
+        
+        conn.close()
+        
+        return jsonify({'ok': 1, 'data': history})
+    except Exception as e:
+        return jsonify({'ok': 0, 'msg': f'获取积分记录失败: {str(e)}'})
+
+# 每日签到
+@app.route('/api/points/checkin', methods=['POST'])
+def points_checkin():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        
+        today = datetime.now().strftime('%Y-%m-%d')
+        
+        c.execute('SELECT last_checkin, checkin_streak, points FROM user_points WHERE uid = ?', (uid,))
+        row = c.fetchone()
+        
+        if not row:
+            c.execute('INSERT INTO user_points (uid, points, total_earned, total_spent, last_checkin, checkin_streak) VALUES (?, 0, 0, 0, "", 0)', (uid,))
+            conn.commit()
+            last_checkin, checkin_streak = '', 0
+        else:
+            last_checkin, checkin_streak, _ = row
+        
+        if last_checkin == today:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '今天已经签到过了'})
+        
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        if last_checkin == yesterday:
+            checkin_streak += 1
+        else:
+            checkin_streak = 1
+        
+        base_points = 10
+        bonus_points = 0
+        
+        if checkin_streak >= 7:
+            bonus_points = 20
+            description = f'每日签到 +{base_points}分，连续签到7天额外奖励 +{bonus_points}分'
+        elif checkin_streak >= 3:
+            bonus_points = 5
+            description = f'每日签到 +{base_points}分，连续签到3天奖励 +{bonus_points}分'
+        else:
+            description = f'每日签到 +{base_points}分'
+        
+        total_points = base_points + bonus_points
+        
+        c.execute('UPDATE user_points SET last_checkin = ?, checkin_streak = ?, points = points + ?, total_earned = total_earned + ?, updated_at = CURRENT_TIMESTAMP WHERE uid = ?',
+                  (today, checkin_streak, total_points, total_points, uid))
+        
+        c.execute('INSERT INTO point_transactions (uid, type, points, description) VALUES (?, ?, ?, ?)',
+                  (uid, 'earn', total_points, description))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'ok': 1,
+            'msg': f'签到成功！获得 {total_points} 积分',
+            'data': {
+                'points': total_points,
+                'streak': checkin_streak,
+                'description': description
+            }
+        })
+    except Exception as e:
+        return jsonify({'ok': 0, 'msg': f'签到失败: {str(e)}'})
+
+# 获取奖励列表（前台）
+@app.route('/api/rewards', methods=['POST'])
+def get_rewards_list():
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        
+        c.execute('''SELECT id, title, description, points_required, image_url, has_image, stock 
+                      FROM rewards 
+                      WHERE enabled = 1 
+                      ORDER BY sort_order ASC, created_at DESC''')
+        
+        rewards = []
+        for row in c.fetchall():
+            rewards.append({
+                'id': row[0],
+                'title': row[1],
+                'description': row[2],
+                'points_required': row[3],
+                'image_url': row[4],
+                'has_image': row[5],
+                'stock': row[6]
+            })
+        
+        conn.close()
+        
+        return jsonify({'ok': 1, 'data': rewards})
+    except Exception as e:
+        return jsonify({'ok': 0, 'msg': f'获取奖励列表失败: {str(e)}'})
+
+# 兑换奖励
+@app.route('/api/rewards/claim', methods=['POST'])
+def claim_reward():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    data = request.get_json()
+    reward_id = data.get('reward_id')
+    
+    if not reward_id:
+        return jsonify({'ok': 0, 'msg': '请选择要兑换的奖励'})
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        
+        # 获取奖励信息
+        c.execute('SELECT title, points_required, stock, enabled FROM rewards WHERE id = ?', (reward_id,))
+        reward = c.fetchone()
+        
+        if not reward:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '奖励不存在'})
+        
+        title, points_required, stock, enabled = reward
+        
+        if not enabled:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '该奖励已下架'})
+        
+        if stock == 0:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '该奖励已兑换完毕'})
+        
+        # 获取用户积分
+        c.execute('SELECT points FROM user_points WHERE uid = ?', (uid,))
+        user_points_row = c.fetchone()
+        
+        if not user_points_row:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '积分不足'})
+        
+        current_points = user_points_row[0]
+        
+        if current_points < points_required:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': f'积分不足，需要 {points_required} 积分'})
+        
+        # 扣除积分
+        new_points = current_points - points_required
+        c.execute('UPDATE user_points SET points = ?, total_spent = total_spent + ? WHERE uid = ?', 
+                  (new_points, points_required, uid))
+        
+        # 记录交易
+        c.execute('''INSERT INTO point_transactions (uid, type, points, description, related_id)
+                      VALUES (?, 'spend', ?, ?, ?)''', 
+                  (uid, -points_required, f'兑换奖励: {title}', reward_id))
+        
+        # 创建兑换记录
+        c.execute('''INSERT INTO reward_claims (uid, reward_id, points_spent, status)
+                      VALUES (?, ?, ?, 0)''', (uid, reward_id, points_required))
+        
+        # 减少库存
+        if stock > 0:
+            c.execute('UPDATE rewards SET stock = stock - 1 WHERE id = ?', (reward_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'ok': 1, 'msg': f'成功兑换「{title}」，消耗 {points_required} 积分'})
+    except Exception as e:
+        return jsonify({'ok': 0, 'msg': f'兑换失败: {str(e)}'})
+
+# ==================== 管理员积分管理API ====================
+
+# 获取所有奖励（管理后台）
+@app.route('/admin/rewards/list', methods=['POST'])
+def admin_get_rewards():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    role = get_user_role(uid)
+    if role < ROLE_ADMIN:
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        
+        c.execute('''SELECT id, title, description, points_required, image_url, has_image, stock, sort_order, enabled, created_at 
+                      FROM rewards 
+                      ORDER BY sort_order ASC, created_at DESC''')
+        
+        rewards = []
+        for row in c.fetchall():
+            rewards.append({
+                'id': row[0],
+                'title': row[1],
+                'description': row[2],
+                'points_required': row[3],
+                'image_url': row[4],
+                'has_image': row[5],
+                'stock': row[6],
+                'sort_order': row[7],
+                'enabled': row[8],
+                'created_at': row[9]
+            })
+        
+        conn.close()
+        
+        return jsonify({'ok': 1, 'data': rewards})
+    except Exception as e:
+        return jsonify({'ok': 0, 'msg': f'获取奖励列表失败: {str(e)}'})
+
+# 添加/编辑奖励
+@app.route('/admin/rewards/save', methods=['POST'])
+def admin_save_reward():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    role = get_user_role(uid)
+    if role < ROLE_ADMIN:
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    data = request.get_json()
+    reward_id = data.get('id')
+    title = data.get('title', '').strip()
+    description = data.get('description', '').strip()
+    points_required = data.get('points_required', 0)
+    image_url = data.get('image_url', '').strip()
+    has_image = data.get('has_image', 0)
+    stock = data.get('stock', -1)
+    sort_order = data.get('sort_order', 0)
+    enabled = data.get('enabled', 1)
+    
+    if not title:
+        return jsonify({'ok': 0, 'msg': '奖励名称不能为空'})
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        
+        if reward_id:
+            # 更新
+            c.execute('''UPDATE rewards 
+                          SET title = ?, description = ?, points_required = ?, image_url = ?, 
+                              has_image = ?, stock = ?, sort_order = ?, enabled = ?
+                          WHERE id = ?''',
+                      (title, description, points_required, image_url, has_image, stock, sort_order, enabled, reward_id))
+            msg = '奖励更新成功'
+        else:
+            # 新增
+            c.execute('''INSERT INTO rewards (title, description, points_required, image_url, has_image, stock, sort_order, enabled)
+                          VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                      (title, description, points_required, image_url, has_image, stock, sort_order, enabled))
+            msg = '奖励添加成功'
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'ok': 1, 'msg': msg})
+    except Exception as e:
+        return jsonify({'ok': 0, 'msg': f'保存失败: {str(e)}'})
+
+# 删除奖励
+@app.route('/admin/rewards/delete', methods=['POST'])
+def admin_delete_reward():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    role = get_user_role(uid)
+    if role < ROLE_ADMIN:
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    data = request.get_json()
+    reward_id = data.get('id')
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        
+        c.execute('DELETE FROM rewards WHERE id = ?', (reward_id,))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'ok': 1, 'msg': '删除成功'})
+    except Exception as e:
+        return jsonify({'ok': 0, 'msg': f'删除失败: {str(e)}'})
+
+# 给用户添加积分
+@app.route('/admin/points/add', methods=['POST'])
+def admin_add_points():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    role = get_user_role(uid)
+    if role not in (ROLE_OP, ROLE_TRUSTED_OP, ROLE_ADMIN, ROLE_SUPER_ADMIN):
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    data = request.get_json()
+    target_uid = data.get('uid')
+    points = data.get('points', 0)
+    description = data.get('description', '管理员手动添加')
+    
+    if not target_uid or points <= 0:
+        return jsonify({'ok': 0, 'msg': '请填写正确的用户ID和积分数量'})
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        
+        # 检查用户是否存在
+        c.execute('SELECT id FROM users WHERE id = ?', (target_uid,))
+        if not c.fetchone():
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '用户不存在'})
+        
+        # 初始化用户积分（如果不存在）
+        c.execute('INSERT OR IGNORE INTO user_points (uid, points, total_earned, total_spent) VALUES (?, 0, 0, 0)', (target_uid,))
+        
+        # 添加积分
+        c.execute('UPDATE user_points SET points = points + ?, total_earned = total_earned + ? WHERE uid = ?',
+                  (points, points, target_uid))
+        
+        # 记录交易
+        c.execute('''INSERT INTO point_transactions (uid, type, points, description)
+                      VALUES (?, 'earn', ?, ?)''', (target_uid, points, description))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'ok': 1, 'msg': f'成功为用户添加 {points} 积分'})
+    except Exception as e:
+        return jsonify({'ok': 0, 'msg': f'添加积分失败: {str(e)}'})
+
+# 获取兑换记录（管理后台）
+@app.route('/admin/rewards/claims', methods=['POST'])
+def admin_get_claims():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    role = get_user_role(uid)
+    if role < ROLE_ADMIN:
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        
+        c.execute('''SELECT rc.id, rc.uid, u.nickname, r.title, rc.points_spent, rc.status, rc.claim_data, rc.created_at
+                      FROM reward_claims rc
+                      JOIN users u ON rc.uid = u.id
+                      JOIN rewards r ON rc.reward_id = r.id
+                      ORDER BY rc.created_at DESC''')
+        
+        claims = []
+        for row in c.fetchall():
+            claims.append({
+                'id': row[0],
+                'uid': row[1],
+                'nickname': row[2],
+                'reward_title': row[3],
+                'points_spent': row[4],
+                'status': row[5],
+                'claim_data': row[6],
+                'created_at': row[7]
+            })
+        
+        conn.close()
+        
+        return jsonify({'ok': 1, 'data': claims})
+    except Exception as e:
+        return jsonify({'ok': 0, 'msg': f'获取兑换记录失败: {str(e)}'})
+
+# 处理兑换（发放奖励）
+@app.route('/admin/rewards/handle_claim', methods=['POST'])
+def admin_handle_claim():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    role = get_user_role(uid)
+    if role < ROLE_ADMIN:
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    data = request.get_json()
+    claim_id = data.get('id')
+    status = data.get('status', 1)
+    claim_data = data.get('claim_data', '')
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        
+        c.execute('UPDATE reward_claims SET status = ?, claim_data = ? WHERE id = ?',
+                  (status, claim_data, claim_id))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'ok': 1, 'msg': '处理成功'})
+    except Exception as e:
+        return jsonify({'ok': 0, 'msg': f'处理失败: {str(e)}'})
 
 # ==================== 全局错误收集器 ====================
 @app.after_request

@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>积分中心 - MC整合包档期排期站</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        .points-container {
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 0 15px;
+            display: flex;
+            gap: 20px;
+        }
+        
+        .main-content {
+            flex: 1;
+            min-width: 0;
+        }
+        
+        .sidebar {
+            width: 320px;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        /* 积分浮动动画 */
+        .points-float {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: linear-gradient(135deg, #2ECC71 0%, #27AE60 100%);
+            color: #fff;
+            padding: 15px 25px;
+            border-radius: 50px;
+            font-size: 20px;
+            font-weight: bold;
+            box-shadow: 0 10px 30px rgba(46, 204, 113, 0.4);
+            z-index: 10000;
+            opacity: 0;
+            transform: translateY(-20px) scale(0.8);
+            animation: pointsFloatAnim 2s ease-out forwards;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .points-float::before {
+            content: '🎁';
+            font-size: 24px;
+        }
+        
+        @keyframes pointsFloatAnim {
+            0% {
+                opacity: 0;
+                transform: translateY(-20px) scale(0.8);
+            }
+            20% {
+                opacity: 1;
+                transform: translateY(0) scale(1.1);
+            }
+            30% {
+                transform: translateY(0) scale(1);
+            }
+            80% {
+                opacity: 1;
+                transform: translateY(-10px);
+            }
+            100% {
+                opacity: 0;
+                transform: translateY(-30px);
+            }
+        }
+        
+        .points-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px;
+            padding: 30px;
+            text-align: center;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        }
+        
+        .points-header h1 {
+            margin: 0 0 15px 0;
+            color: #fff;
+            font-size: 28px;
+        }
+        
+        .points-display {
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            margin-top: 20px;
+        }
+        
+        .points-stat {
+            text-align: center;
+        }
+        
+        .points-stat .value {
+            font-size: 36px;
+            font-weight: bold;
+            color: #F39C12;
+        }
+        
+        .points-stat .label {
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.8);
+            margin-top: 5px;
+        }
+        
+        .section-card {
+            background: #1e1e1e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+        }
+        
+        .section-card h2 {
+            margin: 0 0 20px 0;
+            color: #42C9D8;
+            font-size: 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .sidebar .rewards-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .sidebar .reward-item {
+            background: #2a2a2a;
+            border-radius: 10px;
+            padding: 12px 15px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .sidebar .reward-item:hover {
+            transform: translateX(5px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        }
+        
+        .sidebar .reward-icon {
+            font-size: 24px;
+            width: 45px;
+            height: 45px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #1a1a2e;
+            border-radius: 8px;
+            flex-shrink: 0;
+        }
+        
+        .sidebar .reward-content {
+            flex: 1;
+            min-width: 0;
+        }
+        
+        .sidebar .reward-title {
+            font-weight: bold;
+            color: #fff;
+            margin-bottom: 3px;
+            font-size: 14px;
+        }
+        
+        .sidebar .reward-desc {
+            font-size: 12px;
+            color: #888;
+            margin: 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .sidebar .reward-points {
+            font-size: 14px;
+            font-weight: bold;
+            white-space: nowrap;
+        }
+        
+        .rewards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 15px;
+        }
+        
+        .reward-item {
+            background: #2a2a2a;
+            border-radius: 10px;
+            padding: 15px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .reward-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        }
+        
+        .reward-image {
+            width: 80px;
+            height: 80px;
+            object-fit: cover;
+            border-radius: 8px;
+            flex-shrink: 0;
+        }
+        
+        .reward-info {
+            flex: 1;
+            min-width: 0;
+        }
+        
+        .reward-title {
+            font-weight: bold;
+            color: #fff;
+            margin-bottom: 5px;
+            font-size: 15px;
+        }
+        
+        .reward-desc {
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 10px;
+            line-height: 1.4;
+        }
+        
+        .reward-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .reward-points {
+            color: #F39C12;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        
+        .reward-stock {
+            font-size: 12px;
+            color: #888;
+        }
+        
+        .reward-stock.low {
+            color: #E74C3C;
+            font-weight: bold;
+        }
+        
+        .reward-btn {
+            background: #2ECC71;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            color: #000;
+            cursor: pointer;
+            font-weight: 500;
+            font-size: 13px;
+            transition: background 0.2s;
+        }
+        
+        .reward-btn:hover {
+            background: #27ae60;
+        }
+        
+        .reward-btn:disabled {
+            background: #555;
+            color: #888;
+            cursor: not-allowed;
+        }
+        
+        .history-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .history-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid #333;
+        }
+        
+        .history-item:last-child {
+            border-bottom: none;
+        }
+        
+        .history-info .desc {
+            color: #fff;
+            font-size: 14px;
+            margin-bottom: 3px;
+        }
+        
+        .history-info .time {
+            color: #888;
+            font-size: 12px;
+        }
+        
+        .history-points {
+            font-weight: bold;
+            font-size: 16px;
+        }
+        
+        .history-points.positive {
+            color: #2ECC71;
+        }
+        
+        .history-points.negative {
+            color: #E74C3C;
+        }
+        
+        .empty-state {
+            text-align: center;
+            color: #888;
+            padding: 40px 20px;
+            font-size: 14px;
+        }
+        
+        .back-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            background: #333;
+            color: #fff;
+            padding: 8px 16px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-size: 14px;
+            margin-bottom: 15px;
+            transition: background 0.2s;
+        }
+        
+        .back-btn:hover {
+            background: #444;
+        }
+        
+        .loading-state {
+            text-align: center;
+            color: #888;
+            padding: 40px 20px;
+        }
+        
+        @media (max-width: 900px) {
+            .points-container {
+                flex-direction: column;
+            }
+            
+            .sidebar {
+                width: 100%;
+            }
+            
+            .points-display {
+                gap: 20px;
+            }
+            
+            .points-stat .value {
+                font-size: 28px;
+            }
+            
+            .rewards-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .reward-item {
+                flex-direction: column;
+                text-align: center;
+            }
+            
+            .reward-image {
+                width: 100%;
+                height: 150px;
+            }
+        }
+    </style>
+</head>
+<body>
+<!-- 背景图片层 -->
+<div id="bg-image-layer"></div>
+<!-- 浮动粒子背景 -->
+<div class="floating-particles" id="particles"></div>
+
+<!-- 顶部导航 -->
+<div class="navbar">
+    <div class="logo" id="siteTitle">MC整合包档期排期站</div>
+    <div class="nav-right" id="navBox"></div>
+</div>
+
+<!-- 主内容 -->
+<div class="points-container">
+    <!-- 主内容区域 -->
+    <div class="main-content">
+        <a href="/" class="back-btn">← 返回主页</a>
+        
+        <!-- 积分概览 -->
+        <div class="points-header">
+            <h1>💎 积分中心</h1>
+            <div class="points-display">
+                <div class="points-stat">
+                    <div class="value" id="userPoints">-</div>
+                    <div class="label">当前积分</div>
+                </div>
+                <div class="points-stat">
+                    <div class="value" id="totalEarned">-</div>
+                    <div class="label">累计获得</div>
+                </div>
+                <div class="points-stat">
+                    <div class="value" id="totalSpent">-</div>
+                    <div class="label">累计消费</div>
+                </div>
+            </div>
+            
+            <!-- 签到按钮 -->
+            <div style="text-align:center;margin-top:20px;">
+                <button id="checkinBtn" onclick="doCheckin()" style="background:#F39C12;color:#000;border:none;padding:12px 40px;border-radius:8px;font-size:16px;font-weight:bold;cursor:pointer;transition:all 0.2s;">
+                    📅 立即签到
+                </button>
+                <div id="checkinMsg" style="margin-top:10px;font-size:13px;color:#888;"></div>
+            </div>
+        </div>
+        
+        <!-- 可兑换奖励 -->
+        <div class="section-card">
+            <h2>🏆 可兑换奖励</h2>
+            <div id="rewardsList" class="rewards-grid">
+                <div class="loading-state">加载中...</div>
+            </div>
+        </div>
+        
+        <!-- 积分记录 -->
+        <div class="section-card">
+            <h2>📋 积分记录</h2>
+            <div id="pointsHistory" class="history-list">
+                <div class="loading-state">加载中...</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 侧边栏 -->
+    <div class="sidebar">
+        <!-- 获取积分方式 -->
+        <div class="section-card">
+            <h2>📖 获取积分</h2>
+            <div class="rewards-list">
+                <div class="reward-item">
+                    <div class="reward-icon">📅</div>
+                    <div class="reward-content">
+                        <div class="reward-title">每日签到</div>
+                        <div class="reward-desc">每天签到获得积分</div>
+                    </div>
+                    <div class="reward-points" style="color:#2ECC71;">+10</div>
+                </div>
+                <div class="reward-item">
+                    <div class="reward-icon">🔥</div>
+                    <div class="reward-content">
+                        <div class="reward-title">连续签到</div>
+                        <div class="reward-desc">连续3天额外+5，7天+20</div>
+                    </div>
+                    <div class="reward-points" style="color:#F39C12;">+5~20</div>
+                </div>
+                <div class="reward-item">
+                    <div class="reward-icon">📝</div>
+                    <div class="reward-content">
+                        <div class="reward-title">预约档期</div>
+                        <div class="reward-desc">预约成功奖励（仅一次）</div>
+                    </div>
+                    <div class="reward-points" style="color:#9B59B6;">+20</div>
+                </div>
+                <div class="reward-item">
+                    <div class="reward-icon">💬</div>
+                    <div class="reward-content">
+                        <div class="reward-title">发表评论</div>
+                        <div class="reward-desc">发表评论奖励（每天一次）</div>
+                    </div>
+                    <div class="reward-points" style="color:#2ECC71;">+10</div>
+                </div>
+                <div class="reward-item">
+                    <div class="reward-icon">🎮</div>
+                    <div class="reward-content">
+                        <div class="reward-title">参与活动</div>
+                        <div class="reward-desc">腐竹统计发放</div>
+                    </div>
+                    <div class="reward-points" style="color:#E74C3C;">+20</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// CSRF Token 获取函数（从 Cookie 读取）
+function getCsrfToken() {
+    const match = document.cookie.match(/csrf_token=([^;]+)/);
+    return match ? match[1] : '';
+}
+
+// 全局 fetch 包装，自动添加 CSRF token
+const originalFetch = window.fetch;
+window.fetch = function(url, options = {}) {
+    if (options.method && ['POST', 'PUT', 'DELETE'].includes(options.method.toUpperCase())) {
+        options.headers = options.headers || {};
+        options.headers['X-CSRFToken'] = getCsrfToken();
+    }
+    return originalFetch(url, options);
+};
+
+// 显示积分浮动动画
+function showPointsFloat(points) {
+    const floatEl = document.createElement('div');
+    floatEl.className = 'points-float';
+    floatEl.innerText = `+${points} 积分`;
+    document.body.appendChild(floatEl);
+    
+    setTimeout(() => {
+        floatEl.remove();
+    }, 2000);
+}
+
+// 检查登录状态
+async function checkLogin() {
+    try {
+        const res = await fetch('/user/info', {method: 'POST'});
+        const data = await res.json();
+        if (!data.ok || !data.uid) {
+            window.location.href = '/';
+            return false;
+        }
+        return true;
+    } catch (e) {
+        window.location.href = '/';
+        return false;
+    }
+}
+
+// 加载用户积分
+async function loadUserPoints() {
+    try {
+        const res = await fetch('/api/points', {method: 'POST'});
+        const data = await res.json();
+        
+        if (data.ok === 1) {
+            const points = data.data;
+            document.getElementById('userPoints').innerText = points.points;
+            document.getElementById('totalEarned').innerText = points.total_earned;
+            document.getElementById('totalSpent').innerText = points.total_spent;
+            
+            if (points.last_checkin) {
+                // 使用本地时间获取今天的日期
+                const now = new Date();
+                const year = now.getFullYear();
+                const month = String(now.getMonth() + 1).padStart(2, '0');
+                const day = String(now.getDate()).padStart(2, '0');
+                const today = `${year}-${month}-${day}`;
+                
+                if (points.last_checkin === today) {
+                    const btn = document.getElementById('checkinBtn');
+                    btn.innerText = '✅ 今日已签到';
+                    btn.style.background = '#555';
+                    btn.style.color = '#888';
+                    btn.disabled = true;
+                    document.getElementById('checkinMsg').innerText = `连续签到 ${points.checkin_streak || 0} 天`;
+                }
+            }
+        } else {
+            document.getElementById('userPoints').innerText = '0';
+            document.getElementById('totalEarned').innerText = '0';
+            document.getElementById('totalSpent').innerText = '0';
+        }
+    } catch (e) {
+        console.error('加载积分失败:', e);
+        document.getElementById('userPoints').innerText = '加载失败';
+    }
+}
+
+// 执行签到
+async function doCheckin() {
+    const btn = document.getElementById('checkinBtn');
+    const msg = document.getElementById('checkinMsg');
+    
+    btn.disabled = true;
+    btn.innerText = '签到中...';
+    
+    try {
+        const res = await fetch('/api/points/checkin', {method: 'POST'});
+        const data = await res.json();
+        
+        if (data.ok === 1) {
+            msg.innerText = data.msg;
+            msg.style.color = '#2ECC71';
+            btn.innerText = '✅ 今日已签到';
+            btn.style.background = '#555';
+            btn.style.color = '#888';
+            
+            const earnedPoints = data.data ? data.data.points : 10;
+            showPointsFloat(earnedPoints);
+            
+            loadUserPoints();
+            loadHistory();
+        } else {
+            msg.innerText = data.msg;
+            msg.style.color = '#E74C3C';
+            btn.innerText = '📅 立即签到';
+            btn.style.background = '#F39C12';
+            btn.style.color = '#000';
+            btn.disabled = false;
+        }
+    } catch (e) {
+        msg.innerText = '签到失败，请重试';
+        msg.style.color = '#E74C3C';
+        btn.innerText = '📅 立即签到';
+        btn.style.background = '#F39C12';
+        btn.style.color = '#000';
+        btn.disabled = false;
+    }
+}
+
+// 加载奖励列表
+async function loadRewards() {
+    try {
+        const res = await fetch('/api/rewards', {method: 'POST'});
+        const data = await res.json();
+        
+        const container = document.getElementById('rewardsList');
+        
+        if (data.ok === 1) {
+            const rewards = data.data;
+            if (rewards.length === 0) {
+                container.innerHTML = '<div class="empty-state">暂无可用奖励</div>';
+            } else {
+                container.innerHTML = rewards.map(r => `
+                    <div class="reward-item">
+                        ${r.has_image && r.image_url ? 
+                            `<img src="${r.image_url}" class="reward-image" onerror="this.style.display='none'">` : 
+                            '<div class="reward-image" style="background:#333;display:flex;align-items:center;justify-content:center;color:#888;">🎁</div>'
+                        }
+                        <div class="reward-info">
+                            <div class="reward-title">${escapeHtml(r.title)}</div>
+                            <div class="reward-desc">${escapeHtml(r.description || '')}</div>
+                            <div class="reward-meta">
+                                <span class="reward-points">${r.points_required} 积分</span>
+                                <span class="reward-stock ${r.stock > 0 && r.stock <= 5 ? 'low' : ''}">
+                                    ${r.stock === -1 ? '📦 无限' : r.stock === 0 ? '🚫 已兑完' : `📦 库存: ${r.stock}`}
+                                </span>
+                            </div>
+                        </div>
+                        <button class="reward-btn" onclick="claimReward(${r.id}, '${escapeHtml(r.title)}', ${r.points_required}, ${r.stock})" 
+                            ${r.stock === 0 ? 'disabled' : ''}>
+                            ${r.stock === 0 ? '已兑完' : '兑换'}
+                        </button>
+                    </div>
+                `).join('');
+            }
+        } else {
+            container.innerHTML = '<div class="empty-state">加载失败，请刷新重试</div>';
+        }
+    } catch (e) {
+        console.error('加载奖励列表失败:', e);
+        document.getElementById('rewardsList').innerHTML = '<div class="empty-state">加载失败，请刷新重试</div>';
+    }
+}
+
+// 加载积分记录
+async function loadHistory() {
+    try {
+        const res = await fetch('/api/points/history', {method: 'POST'});
+        const data = await res.json();
+        
+        const container = document.getElementById('pointsHistory');
+        
+        if (data.ok === 1) {
+            const history = data.data;
+            if (history.length === 0) {
+                container.innerHTML = '<div class="empty-state">暂无积分记录</div>';
+            } else {
+                container.innerHTML = history.map(h => `
+                    <div class="history-item">
+                        <div class="history-info">
+                            <div class="desc">${escapeHtml(h.description)}</div>
+                            <div class="time">${h.created_at}</div>
+                        </div>
+                        <div class="history-points ${h.points > 0 ? 'positive' : 'negative'}">
+                            ${h.points > 0 ? '+' : ''}${h.points}
+                        </div>
+                    </div>
+                `).join('');
+            }
+        } else {
+            container.innerHTML = '<div class="empty-state">加载失败，请刷新重试</div>';
+        }
+    } catch (e) {
+        console.error('加载积分记录失败:', e);
+        document.getElementById('pointsHistory').innerHTML = '<div class="empty-state">加载失败，请刷新重试</div>';
+    }
+}
+
+// 兑换奖励
+async function claimReward(rewardId, title, pointsRequired, stock) {
+    if (stock === 0) {
+        alert('该奖励已兑换完毕');
+        return;
+    }
+    
+    if (!confirm(`确定要兑换「${title}」吗？将消耗 ${pointsRequired} 积分。`)) {
+        return;
+    }
+    
+    try {
+        const res = await fetch('/api/rewards/claim', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({reward_id: rewardId})
+        });
+        const data = await res.json();
+        
+        if (data.ok === 1) {
+            alert(data.msg);
+            loadUserPoints();
+            loadRewards();
+            loadHistory();
+        } else {
+            alert(data.msg);
+        }
+    } catch (e) {
+        alert('兑换失败: ' + e.message);
+    }
+}
+
+// HTML转义
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// 初始化
+async function init() {
+    const loggedIn = await checkLogin();
+    if (loggedIn) {
+        loadUserPoints();
+        loadRewards();
+        loadHistory();
+    }
+}
+
+init();
+</script>
+</body>
+</html>
