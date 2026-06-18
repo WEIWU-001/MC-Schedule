@@ -9075,11 +9075,12 @@ def check_update():
             if is_gitee:
                 try_fetch(remote_repo_url, 'Gitee')
             
-            if not remote_commit and not is_gitee:
-                for mirror in github_mirrors:
-                    mirror_repo_url = remote_repo_url.replace('https://github.com', mirror)
-                    if try_fetch(mirror_repo_url, mirror):
-                        break
+            if not remote_commit:
+                for source in update_sources:
+                    if source['type'] == 'mirror' and source['url'] and source['id'] != 'gitee':
+                        mirror_repo_url = remote_repo_url.replace('https://github.com', source['url'])
+                        if try_fetch(mirror_repo_url, source['name']):
+                            break
         
         if not remote_commit:
             error_details = []
@@ -9088,12 +9089,12 @@ def check_update():
                 if selected_source:
                     error_details.append(f"• {selected_source['name']} - 连接超时或失败")
             else:
-                is_gitee = 'gitee.com' in remote_repo_url
-                if is_gitee:
-                    error_details.append(f"• Gitee - 连接超时或失败")
-                for mirror in github_mirrors:
-                    mirror_name = mirror.replace('https://', '')
-                    error_details.append(f"• {mirror_name} - 连接超时或失败")
+                for source in update_sources:
+                    if source['type'] == 'direct' and source['id'] == 'gitee':
+                        error_details.append(f"• {source['name']} - 连接超时或失败")
+                    elif source['type'] == 'mirror' and source['url']:
+                        mirror_name = source['url'].replace('https://', '')
+                        error_details.append(f"• {mirror_name} - 连接超时或失败")
             
             proxy_hint = ""
             if not http_proxy and not https_proxy:
@@ -9213,10 +9214,11 @@ def do_update():
                 try_pull(remote_repo_url, 'Gitee')
             
             if not used_mirror:
-                for mirror in github_mirrors:
-                    mirror_repo_url = remote_repo_url.replace('https://github.com', mirror)
-                    if try_pull(mirror_repo_url, mirror):
-                        break
+                for source in update_sources:
+                    if source['type'] == 'mirror' and source['url'] and source['id'] != 'gitee':
+                        mirror_repo_url = remote_repo_url.replace('https://github.com', source['url'])
+                        if try_pull(mirror_repo_url, source['name']):
+                            break
         
         if not used_mirror:
             try:
