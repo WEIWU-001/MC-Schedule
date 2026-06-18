@@ -68,9 +68,9 @@ class Updater:
     # 默认更新源配置
     DEFAULT_SOURCES = [
         UpdateSource('git', 'GitHub', '', 'direct', 'GitHub仓库直连'),
+        UpdateSource('gitee', 'Gitee', '', 'direct', 'Gitee仓库'),
         UpdateSource('ghproxy', 'GHProxy', 'https://ghproxy.com/https://github.com', 'mirror', 'GHProxy镜像'),
         UpdateSource('gitclone', 'GitClone', 'https://gitclone.com/github.com', 'mirror', 'GitClone镜像'),
-        UpdateSource('gitee', 'Gitee', '', 'direct', 'Gitee仓库'),
     ]
     
     # 排除的目录和文件
@@ -270,7 +270,11 @@ class Updater:
             (success, remote_commit)
         """
         if source.type == 'direct':
-            repo_url = self.remote_repo_url
+            if source.id == 'gitee':
+                repo_url = self.remote_repo_url.replace('github.com', 'gitee.com')
+                repo_url = repo_url.replace('WEIWU-001', 'weiwu001')
+            else:
+                repo_url = self.remote_repo_url
         elif source.type == 'mirror' and source.url:
             repo_url = self.remote_repo_url.replace('https://github.com', source.url)
         else:
@@ -331,46 +335,9 @@ class Updater:
                     remote_commit = remote
                     used_source_name = selected_source.name
         else:
-            # 自动选择源的优先级：
-            # 1. 如果配置的是 gitee 仓库，先尝试 gitee
-            # 2. 否则优先尝试 GitHub 直连 (git)
-            # 3. 再尝试 ghproxy 镜像（如果服务器对其网络好）
-            # 4. 再尝试 gitclone 镜像
-            # 5. 最后尝试 gitee 作为备选
-            
-            is_gitee_repo = 'gitee.com' in self.remote_repo_url
-            
-            # 源尝试顺序
-            source_priority = []
-            
-            if is_gitee_repo:
-                # gitee 仓库优先使用 gitee
-                gitee_source = next((s for s in self.update_sources if s.id == 'gitee'), None)
-                if gitee_source:
-                    source_priority.append(gitee_source)
-            else:
-                # GitHub 仓库优先使用直连
-                git_source = next((s for s in self.update_sources if s.id == 'git'), None)
-                if git_source:
-                    source_priority.append(git_source)
-                
-                # 添加 ghproxy 镜像
-                ghproxy_source = next((s for s in self.update_sources if s.id == 'ghproxy'), None)
-                if ghproxy_source:
-                    source_priority.append(ghproxy_source)
-                
-                # 添加 gitclone 镜像
-                gitclone_source = next((s for s in self.update_sources if s.id == 'gitclone'), None)
-                if gitclone_source:
-                    source_priority.append(gitclone_source)
-            
-            # 添加 gitee 作为备选（如果没有在前面添加）
-            gitee_source = next((s for s in self.update_sources if s.id == 'gitee'), None)
-            if gitee_source and gitee_source not in source_priority:
-                source_priority.append(gitee_source)
-            
-            # 依次尝试每个源
-            for source in source_priority:
+            # 按照配置文件中的顺序尝试更新源
+            # 顺序：git (GitHub) → gitee → ghproxy → gitclone
+            for source in self.update_sources:
                 success, remote = self.try_fetch_from_source(source, current_branch)
                 if success:
                     remote_commit = remote
@@ -531,36 +498,8 @@ class Updater:
                 if selected_source:
                     sources_to_try.append(selected_source)
             else:
-                # 自动选择源的优先级：
-                # 1. 如果配置的是 gitee 仓库，先尝试 gitee
-                # 2. 否则优先尝试 GitHub 直连 (git)
-                # 3. 再尝试 ghproxy 镜像（如果服务器对其网络好）
-                # 4. 再尝试 gitclone 镜像
-                # 5. 最后尝试 gitee 作为备选
-                
-                is_gitee_repo = 'gitee.com' in self.remote_repo_url
-                
-                if is_gitee_repo:
-                    gitee_source = next((s for s in self.update_sources if s.id == 'gitee'), None)
-                    if gitee_source:
-                        sources_to_try.append(gitee_source)
-                else:
-                    git_source = next((s for s in self.update_sources if s.id == 'git'), None)
-                    if git_source:
-                        sources_to_try.append(git_source)
-                    
-                    ghproxy_source = next((s for s in self.update_sources if s.id == 'ghproxy'), None)
-                    if ghproxy_source:
-                        sources_to_try.append(ghproxy_source)
-                    
-                    gitclone_source = next((s for s in self.update_sources if s.id == 'gitclone'), None)
-                    if gitclone_source:
-                        sources_to_try.append(gitclone_source)
-                
-                # 添加 gitee 作为备选
-                gitee_source = next((s for s in self.update_sources if s.id == 'gitee'), None)
-                if gitee_source and gitee_source not in sources_to_try:
-                    sources_to_try.append(gitee_source)
+                # 按照配置文件中的顺序尝试更新源
+                sources_to_try = list(self.update_sources)
             
             # 尝试每个源
             for source in sources_to_try:
@@ -571,7 +510,11 @@ class Updater:
                     
                     # 执行pull
                     if source.type == 'direct':
-                        pull_url = self.remote_repo_url
+                        if source.id == 'gitee':
+                            pull_url = self.remote_repo_url.replace('github.com', 'gitee.com')
+                            pull_url = pull_url.replace('WEIWU-001', 'weiwu001')
+                        else:
+                            pull_url = self.remote_repo_url
                     else:
                         pull_url = self.remote_repo_url.replace('https://github.com', source.url)
                     

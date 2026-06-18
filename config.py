@@ -103,6 +103,20 @@ DEFAULT_BRANCH = os.environ.get('DEFAULT_BRANCH', 'main')
 
 UPDATE_SOURCES = [
     {
+        'id': 'git',
+        'name': 'GitHub',
+        'url': '',
+        'type': 'direct',
+        'description': 'GitHub直连'
+    },
+    {
+        'id': 'gitee',
+        'name': 'Gitee',
+        'url': '',
+        'type': 'direct',
+        'description': 'Gitee直连'
+    },
+    {
         'id': 'ghproxy',
         'name': 'GHProxy',
         'url': 'https://ghproxy.com/https://github.com',
@@ -115,13 +129,6 @@ UPDATE_SOURCES = [
         'url': 'https://gitclone.com/github.com',
         'type': 'mirror',
         'description': 'GitClone镜像，支持多种协议'
-    },
-    {
-        'id': 'gitee',
-        'name': 'Gitee',
-        'url': '',
-        'type': 'direct',
-        'description': 'Gitee仓库（需在REMOTE_REPO_URL配置）'
     }
 ]
 
