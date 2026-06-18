@@ -103,32 +103,11 @@ DEFAULT_BRANCH = os.environ.get('DEFAULT_BRANCH', 'main')
 
 UPDATE_SOURCES = [
     {
-        'id': 'github',
-        'name': 'GitHub 官方',
-        'url': 'https://github.com',
-        'type': 'mirror',
-        'description': 'GitHub官方源，速度较慢但最稳定'
-    },
-    {
         'id': 'ghproxy',
         'name': 'GHProxy',
         'url': 'https://ghproxy.com/https://github.com',
         'type': 'mirror',
         'description': 'GitHub镜像代理，国内访问较快'
-    },
-    {
-        'id': 'moeyy',
-        'name': 'Moeyy GitHub',
-        'url': 'https://github.moeyy.xyz',
-        'type': 'mirror',
-        'description': 'Moeyy的GitHub镜像，支持文件下载'
-    },
-    {
-        'id': 'fastgit',
-        'name': 'FastGit',
-        'url': 'https://hub.fastgit.xyz',
-        'type': 'mirror',
-        'description': 'FastGit镜像，国内速度快'
     },
     {
         'id': 'gitclone',

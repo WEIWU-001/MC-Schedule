@@ -8982,18 +8982,7 @@ def check_update():
         remote_repo_url = app.config.get('REMOTE_REPO_URL', 'https://github.com/WEIWU-001/MC-Schedule.git')
         default_branch = app.config.get('DEFAULT_BRANCH', 'main')
         update_sources = app.config.get('UPDATE_SOURCES', [])
-        github_mirrors = app.config.get('GITHUB_MIRRORS', [
-            'https://github.com',
-            'https://ghproxy.com/https://github.com',
-            'https://mirror.ghproxy.com/https://github.com',
-            'https://github.moeyy.xyz',
-            'https://ghproxy.net/https://github.com',
-            'https://gitproxy.com/https://github.com',
-            'https://hub.fastgit.xyz',
-            'https://gitclone.com/github.com',
-            'https://github.bajins.com',
-            'https://github.xmcp.ml'
-        ])
+        github_mirrors = app.config.get('GITHUB_MIRRORS', [])
         
         http_proxy = app.config.get('HTTP_PROXY', '')
         https_proxy = app.config.get('HTTPS_PROXY', '')
@@ -9166,18 +9155,7 @@ def do_update():
         remote_repo_url = app.config.get('REMOTE_REPO_URL', 'https://github.com/WEIWU-001/MC-Schedule.git')
         default_branch = app.config.get('DEFAULT_BRANCH', 'main')
         update_sources = app.config.get('UPDATE_SOURCES', [])
-        github_mirrors = app.config.get('GITHUB_MIRRORS', [
-            'https://github.com',
-            'https://ghproxy.com/https://github.com',
-            'https://mirror.ghproxy.com/https://github.com',
-            'https://github.moeyy.xyz',
-            'https://ghproxy.net/https://github.com',
-            'https://gitproxy.com/https://github.com',
-            'https://hub.fastgit.xyz',
-            'https://gitclone.com/github.com',
-            'https://github.bajins.com',
-            'https://github.xmcp.ml'
-        ])
+        github_mirrors = app.config.get('GITHUB_MIRRORS', [])
         
         http_proxy = app.config.get('HTTP_PROXY', '')
         https_proxy = app.config.get('HTTPS_PROXY', '')
