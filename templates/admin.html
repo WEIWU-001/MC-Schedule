@@ -1210,7 +1210,8 @@
             // 确保POST请求有请求体
             if (options.method && options.method.toUpperCase() === 'POST') {
                 options.headers = options.headers || {};
-                if (!options.headers['Content-Type']) {
+                // 如果 body 是 FormData，不要设置 Content-Type（浏览器会自动设置 multipart/form-data）
+                if (!(options.body instanceof FormData) && !options.headers['Content-Type']) {
                     options.headers['Content-Type'] = 'application/json';
                 }
                 if (!options.body) {
