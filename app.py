@@ -8974,6 +8974,9 @@ def check_update():
     try:
         import os
         
+        project_dir = app.root_path
+        os.chdir(project_dir)
+        
         source_id = request.form.get('source_id', '')
         
         remote_repo_url = app.config.get('REMOTE_REPO_URL', 'https://github.com/WEIWU-001/MC-Schedule.git')
@@ -9154,6 +9157,9 @@ def do_update():
     
     try:
         import os
+        
+        project_dir = app.root_path
+        os.chdir(project_dir)
         
         source_id = request.form.get('source_id', '')
         
