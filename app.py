@@ -8972,165 +8972,29 @@ def check_update():
         return jsonify({'ok': 0, 'msg': '权限不足（仅最高管理员可用）'})
     
     try:
-        import os
+        from updater import get_updater_from_app, UpdaterError
         
-        project_dir = app.root_path
-        os.chdir(project_dir)
-        
+        updater = get_updater_from_app(app)
         source_id = request.form.get('source_id', '')
         
-        remote_repo_url = app.config.get('REMOTE_REPO_URL', 'https://github.com/WEIWU-001/MC-Schedule.git')
-        default_branch = app.config.get('DEFAULT_BRANCH', 'main')
-        update_sources = app.config.get('UPDATE_SOURCES', [])
-        github_mirrors = app.config.get('GITHUB_MIRRORS', [])
-        
-        http_proxy = app.config.get('HTTP_PROXY', '')
-        https_proxy = app.config.get('HTTPS_PROXY', '')
-        
-        if http_proxy:
-            os.environ['HTTP_PROXY'] = http_proxy
-            os.environ['http_proxy'] = http_proxy
-        if https_proxy:
-            os.environ['HTTPS_PROXY'] = https_proxy
-            os.environ['https_proxy'] = https_proxy
-        
-        os.system('git config --global http.sslVerify false >nul 2>&1')
-        
-        if http_proxy or https_proxy:
-            proxy_url = https_proxy if https_proxy else http_proxy
-            os.system(f'git config --global http.proxy {proxy_url} >nul 2>&1')
-            os.system(f'git config --global https.proxy {proxy_url} >nul 2>&1')
-        else:
-            os.system('git config --global --unset http.proxy >nul 2>&1')
-            os.system('git config --global --unset https.proxy >nul 2>&1')
-        
-        try:
-            with os.popen('git rev-parse HEAD') as f:
-                current_commit = f.read().strip()
-            with os.popen('git branch --show-current') as f:
-                current_branch = f.read().strip()
-            if not current_branch:
-                current_branch = default_branch
-        except:
-            current_commit = '未知'
-            current_branch = default_branch
-        
-        remote_commit = None
-        used_mirror = None
-        
-        def try_fetch(repo_url, mirror_name):
-            nonlocal remote_commit, used_mirror
-            for attempt in range(2):
-                try:
-                    os.system('git remote remove origin >nul 2>&1')
-                    os.system(f'git remote add origin {repo_url} >nul 2>&1')
-                    
-                    import subprocess
-                    import threading
-                    
-                    result_container = {'stdout': '', 'stderr': '', 'returncode': None}
-                    
-                    def fetch_task():
-                        try:
-                            proc = subprocess.Popen(
-                                ['git', 'ls-remote', '--heads', 'origin', current_branch],
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                text=True,
-                                timeout=60
-                            )
-                            stdout, stderr = proc.communicate(timeout=60)
-                            result_container['stdout'] = stdout.strip()
-                            result_container['stderr'] = stderr.strip()
-                            result_container['returncode'] = proc.returncode
-                        except subprocess.TimeoutExpired:
-                            result_container['stderr'] = 'Timeout'
-                        except Exception as e:
-                            result_container['stderr'] = str(e)
-                    
-                    fetch_thread = threading.Thread(target=fetch_task)
-                    fetch_thread.daemon = True
-                    fetch_thread.start()
-                    fetch_thread.join(timeout=65)
-                    
-                    if result_container['stdout']:
-                        remote_line = result_container['stdout']
-                        remote_commit = remote_line.split()[0]
-                        used_mirror = mirror_name
-                        return True
-                except:
-                    pass
-            return False
-        
-        if source_id:
-            selected_source = next((s for s in update_sources if s['id'] == source_id), None)
-            if selected_source:
-                if selected_source['type'] == 'direct' and selected_source['id'] == 'gitee':
-                    try_fetch(remote_repo_url, 'Gitee')
-                elif selected_source['type'] == 'mirror' and selected_source['url']:
-                    mirror_repo_url = remote_repo_url.replace('https://github.com', selected_source['url'])
-                    try_fetch(mirror_repo_url, selected_source['name'])
-        else:
-            is_gitee = 'gitee.com' in remote_repo_url
-            
-            if is_gitee:
-                try_fetch(remote_repo_url, 'Gitee')
-            
-            if not remote_commit:
-                for source in update_sources:
-                    if source['type'] == 'mirror' and source['url'] and source['id'] != 'gitee':
-                        mirror_repo_url = remote_repo_url.replace('https://github.com', source['url'])
-                        if try_fetch(mirror_repo_url, source['name']):
-                            break
-        
-        if not remote_commit:
-            error_details = []
-            if source_id:
-                selected_source = next((s for s in update_sources if s['id'] == source_id), None)
-                if selected_source:
-                    error_details.append(f"• {selected_source['name']} - 连接超时或失败")
-            else:
-                for source in update_sources:
-                    if source['type'] == 'direct' and source['id'] == 'gitee':
-                        error_details.append(f"• {source['name']} - 连接超时或失败")
-                    elif source['type'] == 'mirror' and source['url']:
-                        mirror_name = source['url'].replace('https://', '')
-                        error_details.append(f"• {mirror_name} - 连接超时或失败")
-            
-            proxy_hint = ""
-            if not http_proxy and not https_proxy:
-                proxy_hint = "\n\n💡 建议：在服务器环境变量中配置代理（如 HTTP_PROXY=http://127.0.0.1:7890）"
-            
-            return jsonify({
-                'ok': 0,
-                'msg': '无法连接到更新源，请检查网络或尝试使用代理服务器',
-                'detail': '所有更新源均无法访问：\n' + '\n'.join(error_details) + proxy_hint
-            })
-        
-        os.system(f'git remote remove origin >nul 2>&1')
-        os.system(f'git remote add origin {remote_repo_url} >nul 2>&1')
-        
-        has_update = current_commit != remote_commit
-        
-        update_log = []
-        if has_update:
-            try:
-                with os.popen(f'git log --oneline {current_commit}..origin/{current_branch} -n 10') as f:
-                    log_output = f.read().strip()
-                update_log = log_output.split('\n') if log_output else []
-            except:
-                update_log = []
+        version_info = updater.check_update(source_id=source_id)
         
         return jsonify({
             'ok': 1,
             'data': {
-                'current_version': current_commit[:7] if current_commit and current_commit != '未知' else '未知',
-                'current_branch': current_branch,
-                'has_update': has_update,
-                'latest_version': remote_commit[:7] if remote_commit else '未知',
-                'update_log': update_log,
-                'used_mirror': used_mirror
+                'current_version': version_info.current_version,
+                'current_branch': version_info.current_branch,
+                'has_update': version_info.has_update,
+                'latest_version': version_info.latest_version,
+                'update_log': version_info.update_log,
+                'used_mirror': version_info.used_source
             }
+        })
+    except UpdaterError as e:
+        return jsonify({
+            'ok': 0,
+            'msg': '无法连接到更新源，请检查网络或尝试使用代理服务器',
+            'detail': str(e)
         })
     except Exception as e:
         return jsonify({'ok': 0, 'msg': f'检查更新失败: {str(e)}'})
@@ -9147,101 +9011,27 @@ def do_update():
         return jsonify({'ok': 0, 'msg': '权限不足（仅最高管理员可用）'})
     
     try:
-        import os
+        from updater import get_updater_from_app
         
-        project_dir = app.root_path
-        os.chdir(project_dir)
-        
+        updater = get_updater_from_app(app)
         source_id = request.form.get('source_id', '')
         
-        remote_repo_url = app.config.get('REMOTE_REPO_URL', 'https://github.com/WEIWU-001/MC-Schedule.git')
-        default_branch = app.config.get('DEFAULT_BRANCH', 'main')
-        update_sources = app.config.get('UPDATE_SOURCES', [])
-        github_mirrors = app.config.get('GITHUB_MIRRORS', [])
+        result = updater.do_update(source_id=source_id)
         
-        http_proxy = app.config.get('HTTP_PROXY', '')
-        https_proxy = app.config.get('HTTPS_PROXY', '')
-        
-        if http_proxy:
-            os.environ['HTTP_PROXY'] = http_proxy
-            os.environ['http_proxy'] = http_proxy
-        if https_proxy:
-            os.environ['HTTPS_PROXY'] = https_proxy
-            os.environ['https_proxy'] = https_proxy
-        
-        os.system('git config --global http.sslVerify false >nul 2>&1')
-        
-        if http_proxy or https_proxy:
-            proxy_url = https_proxy if https_proxy else http_proxy
-            os.system(f'git config --global http.proxy {proxy_url} >nul 2>&1')
-            os.system(f'git config --global https.proxy {proxy_url} >nul 2>&1')
+        if result.success:
+            log_security(get_client_ip(), 'SYSTEM_UPDATE', 'GIT', user_id=uid, detail=f'通过 {result.used_source} 更新，新版本: {result.new_version}')
+            return jsonify({
+                'ok': 1,
+                'msg': result.message,
+                'new_version': result.new_version,
+                'output': result.output,
+                'used_mirror': result.used_source
+            })
         else:
-            os.system('git config --global --unset http.proxy >nul 2>&1')
-            os.system('git config --global --unset https.proxy >nul 2>&1')
-        
-        used_mirror = None
-        output = ''
-        
-        def try_pull(repo_url, mirror_name):
-            nonlocal used_mirror, output
-            try:
-                os.system('git remote remove origin >nul 2>&1')
-                os.system(f'git remote add origin {repo_url} >nul 2>&1')
-                
-                exit_code = os.system(f'git pull origin {default_branch} >git_pull_output.txt 2>&1')
-                
-                with open('git_pull_output.txt', 'r', encoding='utf-8', errors='ignore') as f:
-                    output = f.read()
-                
-                if exit_code == 0:
-                    used_mirror = mirror_name
-                    return True
-            except:
-                pass
-            return False
-        
-        if source_id:
-            selected_source = next((s for s in update_sources if s['id'] == source_id), None)
-            if selected_source:
-                if selected_source['type'] == 'direct' and selected_source['id'] == 'gitee':
-                    try_pull(remote_repo_url, 'Gitee')
-                elif selected_source['type'] == 'mirror' and selected_source['url']:
-                    mirror_repo_url = remote_repo_url.replace('https://github.com', selected_source['url'])
-                    try_pull(mirror_repo_url, selected_source['name'])
-        else:
-            is_gitee = 'gitee.com' in remote_repo_url
-            
-            if is_gitee:
-                try_pull(remote_repo_url, 'Gitee')
-            
-            if not used_mirror:
-                for source in update_sources:
-                    if source['type'] == 'mirror' and source['url'] and source['id'] != 'gitee':
-                        mirror_repo_url = remote_repo_url.replace('https://github.com', source['url'])
-                        if try_pull(mirror_repo_url, source['name']):
-                            break
-        
-        if not used_mirror:
-            try:
-                with open('git_pull_output.txt', 'r', encoding='utf-8', errors='ignore') as f:
-                    output = f.read()
-            except:
-                output = ''
             return jsonify({
                 'ok': 0,
-                'msg': f'所有更新源均无法连接，更新失败: {output}'
+                'msg': result.message
             })
-        
-        with os.popen('git rev-parse HEAD') as f:
-            current_commit = f.read().strip()
-        
-        return jsonify({
-            'ok': 1,
-            'msg': '更新成功！请重启服务器以应用更改',
-            'new_version': current_commit[:7],
-            'output': output,
-            'used_mirror': used_mirror
-        })
     except Exception as e:
         return jsonify({'ok': 0, 'msg': f'更新失败: {str(e)}'})
 
@@ -9257,12 +9047,7 @@ def upload_update():
         return jsonify({'ok': 0, 'msg': '权限不足（仅最高管理员可用）'})
     
     try:
-        import os
-        import shutil
-        import zipfile
-        
-        project_root = app.root_path
-        os.chdir(project_root)
+        from updater import get_updater_from_app
         
         if 'update_file' not in request.files:
             return jsonify({'ok': 0, 'msg': '请选择更新包文件'})
@@ -9274,55 +9059,20 @@ def upload_update():
         if not file.filename.lower().endswith('.zip'):
             return jsonify({'ok': 0, 'msg': '仅支持 ZIP 格式的更新包'})
         
-        temp_dir = os.path.join(project_root, 'update_temp')
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-        os.makedirs(temp_dir)
+        updater = get_updater_from_app(app)
+        result = updater.upload_update(file)
         
-        zip_path = os.path.join(temp_dir, file.filename)
-        file.save(zip_path)
-        
-        if not zipfile.is_zipfile(zip_path):
-            shutil.rmtree(temp_dir)
-            return jsonify({'ok': 0, 'msg': '无效的 ZIP 文件'})
-        
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(temp_dir)
-        
-        extracted_items = os.listdir(temp_dir)
-        if len(extracted_items) == 1 and os.path.isdir(os.path.join(temp_dir, extracted_items[0])):
-            content_dir = os.path.join(temp_dir, extracted_items[0])
+        if result.success:
+            log_security(get_client_ip(), 'SYSTEM_UPDATE', 'UPLOAD', user_id=uid, detail=f'手动上传更新包，更新文件数: {len(result.updated_files) if result.updated_files else 0}')
+            return jsonify({
+                'ok': 1,
+                'msg': result.message,
+                'updated_files': len(result.updated_files) if result.updated_files else 0,
+                'files': result.updated_files[:20] if result.updated_files else []
+            })
         else:
-            content_dir = temp_dir
-        
-        exclude_dirs = ['logs', 'database.db', '__pycache__', '.git', 'node_modules', 'update_temp']
-        exclude_files = ['.env', '.production_mode', '.secret_key']
-        
-        updated_files = []
-        for root, dirs, files in os.walk(content_dir):
-            dirs[:] = [d for d in dirs if d not in exclude_dirs]
-            for filename in files:
-                if filename in exclude_files:
-                    continue
-                
-                src_path = os.path.join(root, filename)
-                rel_path = os.path.relpath(src_path, content_dir)
-                dst_path = os.path.join(project_root, rel_path)
-                
-                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-                shutil.copy2(src_path, dst_path)
-                updated_files.append(rel_path)
-        
-        shutil.rmtree(temp_dir)
-        
-        log_security(get_client_ip(), 'SYSTEM_UPDATE', 'UPLOAD', user_id=uid, detail=f'手动上传更新包，更新文件数: {len(updated_files)}')
-        
-        return jsonify({
-            'ok': 1,
-            'msg': '更新包上传成功！请重启服务器以应用更改',
-            'updated_files': len(updated_files),
-            'files': updated_files[:20]
-        })
+            log_security(get_client_ip(), 'SYSTEM_UPDATE', 'UPLOAD_FAILED', user_id=uid, detail=f'手动上传更新包失败: {result.message}', level='ERROR')
+            return jsonify({'ok': 0, 'msg': result.message})
     except Exception as e:
         import traceback
         log_security(get_client_ip(), 'SYSTEM_UPDATE', 'UPLOAD_FAILED', user_id=uid, detail=f'手动上传更新包失败: {str(e)}', level='ERROR')
@@ -9342,100 +9092,12 @@ def test_update_sources():
         return jsonify({'ok': 0, 'msg': '权限不足（仅最高管理员可用）'})
     
     try:
-        import time
-        import urllib.request
-        import urllib.error
+        from updater import get_updater_from_app
         
-        update_sources = app.config.get('UPDATE_SOURCES', [])
-        remote_repo_url = app.config.get('REMOTE_REPO_URL', '')
+        updater = get_updater_from_app(app)
+        results = updater.test_sources()
         
-        results = []
-        
-        for source in update_sources:
-            source_id = source['id']
-            source_name = source['name']
-            source_type = source['type']
-            source_url = source['url']
-            
-            start_time = time.time()
-            success = False
-            latency = -1
-            error = None
-            
-            try:
-                if source_type == 'mirror' and source_url:
-                    base_url = source_url.split('/https://github.com')[0]
-                    if base_url.endswith('/'):
-                        base_url = base_url[:-1]
-                    
-                    test_url = base_url
-                    
-                    for attempt in range(2):
-                        try:
-                            req = urllib.request.Request(test_url, method='GET')
-                            req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
-                            req.add_header('Accept', '*/*')
-                            
-                            with urllib.request.urlopen(req, timeout=30) as resp:
-                                resp.read(1024)
-                                latency = int((time.time() - start_time) * 1000)
-                                success = resp.status >= 200 and resp.status < 500
-                            break
-                        except urllib.error.HTTPError as e:
-                            if e.code == 404 or e.code == 403:
-                                latency = int((time.time() - start_time) * 1000)
-                                success = True
-                                break
-                            else:
-                                error = f'HTTP {e.code}'
-                        except urllib.error.URLError as e:
-                            error = str(e.reason)
-                        except Exception as e:
-                            error = str(e)
-                elif source_type == 'direct' and source_id == 'gitee':
-                    if 'gitee.com' in remote_repo_url:
-                        test_url = 'https://gitee.com'
-                        
-                        for attempt in range(2):
-                            try:
-                                req = urllib.request.Request(test_url, method='GET')
-                                req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
-                                req.add_header('Accept', '*/*')
-                                
-                                with urllib.request.urlopen(req, timeout=30) as resp:
-                                    resp.read(1024)
-                                    latency = int((time.time() - start_time) * 1000)
-                                    success = resp.status >= 200 and resp.status < 500
-                                break
-                            except urllib.error.HTTPError as e:
-                                if e.code == 404 or e.code == 403:
-                                    latency = int((time.time() - start_time) * 1000)
-                                    success = True
-                                    break
-                                else:
-                                    error = f'HTTP {e.code}'
-                            except urllib.error.URLError as e:
-                                error = str(e.reason)
-                            except Exception as e:
-                                error = str(e)
-                    else:
-                        success = False
-                        error = '未配置Gitee仓库'
-                else:
-                    continue
-            except Exception as e:
-                error = str(e)
-            
-            results.append({
-                'id': source_id,
-                'name': source_name,
-                'type': source_type,
-                'url': source_url,
-                'success': success,
-                'latency': latency,
-                'error': error
-            })
-        
+        # 按成功率和延迟排序
         results.sort(key=lambda x: (not x['success'], x['latency'] if x['success'] else float('inf')))
         
         return jsonify({
