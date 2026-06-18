@@ -9020,45 +9020,46 @@ def check_update():
         
         def try_fetch(repo_url, mirror_name):
             nonlocal remote_commit, used_mirror
-            try:
-                os.system('git remote remove origin >nul 2>&1')
-                os.system(f'git remote add origin {repo_url} >nul 2>&1')
-                
-                import subprocess
-                import threading
-                
-                result_container = {'stdout': '', 'stderr': '', 'returncode': None}
-                
-                def fetch_task():
-                    try:
-                        proc = subprocess.Popen(
-                            ['git', 'ls-remote', '--heads', 'origin', current_branch],
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            text=True,
-                            timeout=30
-                        )
-                        stdout, stderr = proc.communicate(timeout=30)
-                        result_container['stdout'] = stdout.strip()
-                        result_container['stderr'] = stderr.strip()
-                        result_container['returncode'] = proc.returncode
-                    except subprocess.TimeoutExpired:
-                        result_container['stderr'] = 'Timeout'
-                    except Exception as e:
-                        result_container['stderr'] = str(e)
-                
-                fetch_thread = threading.Thread(target=fetch_task)
-                fetch_thread.daemon = True
-                fetch_thread.start()
-                fetch_thread.join(timeout=35)
-                
-                if result_container['stdout']:
-                    remote_line = result_container['stdout']
-                    remote_commit = remote_line.split()[0]
-                    used_mirror = mirror_name
-                    return True
-            except:
-                pass
+            for attempt in range(2):
+                try:
+                    os.system('git remote remove origin >nul 2>&1')
+                    os.system(f'git remote add origin {repo_url} >nul 2>&1')
+                    
+                    import subprocess
+                    import threading
+                    
+                    result_container = {'stdout': '', 'stderr': '', 'returncode': None}
+                    
+                    def fetch_task():
+                        try:
+                            proc = subprocess.Popen(
+                                ['git', 'ls-remote', '--heads', 'origin', current_branch],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                text=True,
+                                timeout=60
+                            )
+                            stdout, stderr = proc.communicate(timeout=60)
+                            result_container['stdout'] = stdout.strip()
+                            result_container['stderr'] = stderr.strip()
+                            result_container['returncode'] = proc.returncode
+                        except subprocess.TimeoutExpired:
+                            result_container['stderr'] = 'Timeout'
+                        except Exception as e:
+                            result_container['stderr'] = str(e)
+                    
+                    fetch_thread = threading.Thread(target=fetch_task)
+                    fetch_thread.daemon = True
+                    fetch_thread.start()
+                    fetch_thread.join(timeout=65)
+                    
+                    if result_container['stdout']:
+                        remote_line = result_container['stdout']
+                        remote_commit = remote_line.split()[0]
+                        used_mirror = mirror_name
+                        return True
+                except:
+                    pass
             return False
         
         if source_id:
@@ -9368,47 +9369,55 @@ def test_update_sources():
                         base_url = base_url[:-1]
                     
                     test_url = base_url
-                    req = urllib.request.Request(test_url, method='GET')
-                    req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
-                    req.add_header('Accept', '*/*')
                     
-                    try:
-                        with urllib.request.urlopen(req, timeout=15) as resp:
-                            resp.read(1024)
-                            latency = int((time.time() - start_time) * 1000)
-                            success = resp.status >= 200 and resp.status < 500
-                    except urllib.error.HTTPError as e:
-                        if e.code == 404 or e.code == 403:
-                            latency = int((time.time() - start_time) * 1000)
-                            success = True
-                        else:
-                            error = f'HTTP {e.code}'
-                    except urllib.error.URLError as e:
-                        error = str(e.reason)
-                    except Exception as e:
-                        error = str(e)
-                elif source_type == 'direct' and source_id == 'gitee':
-                    if 'gitee.com' in remote_repo_url:
-                        test_url = 'https://gitee.com'
-                        req = urllib.request.Request(test_url, method='GET')
-                        req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
-                        req.add_header('Accept', '*/*')
-                        
+                    for attempt in range(2):
                         try:
-                            with urllib.request.urlopen(req, timeout=15) as resp:
+                            req = urllib.request.Request(test_url, method='GET')
+                            req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+                            req.add_header('Accept', '*/*')
+                            
+                            with urllib.request.urlopen(req, timeout=30) as resp:
                                 resp.read(1024)
                                 latency = int((time.time() - start_time) * 1000)
                                 success = resp.status >= 200 and resp.status < 500
+                            break
                         except urllib.error.HTTPError as e:
                             if e.code == 404 or e.code == 403:
                                 latency = int((time.time() - start_time) * 1000)
                                 success = True
+                                break
                             else:
                                 error = f'HTTP {e.code}'
                         except urllib.error.URLError as e:
                             error = str(e.reason)
                         except Exception as e:
                             error = str(e)
+                elif source_type == 'direct' and source_id == 'gitee':
+                    if 'gitee.com' in remote_repo_url:
+                        test_url = 'https://gitee.com'
+                        
+                        for attempt in range(2):
+                            try:
+                                req = urllib.request.Request(test_url, method='GET')
+                                req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+                                req.add_header('Accept', '*/*')
+                                
+                                with urllib.request.urlopen(req, timeout=30) as resp:
+                                    resp.read(1024)
+                                    latency = int((time.time() - start_time) * 1000)
+                                    success = resp.status >= 200 and resp.status < 500
+                                break
+                            except urllib.error.HTTPError as e:
+                                if e.code == 404 or e.code == 403:
+                                    latency = int((time.time() - start_time) * 1000)
+                                    success = True
+                                    break
+                                else:
+                                    error = f'HTTP {e.code}'
+                            except urllib.error.URLError as e:
+                                error = str(e.reason)
+                            except Exception as e:
+                                error = str(e)
                     else:
                         success = False
                         error = '未配置Gitee仓库'
