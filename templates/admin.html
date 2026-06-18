@@ -1600,14 +1600,14 @@
             const resultDiv = document.getElementById("uploadUpdateResult");
             
             if(!fileInput.files || fileInput.files.length === 0){
-                resultDiv.innerText = "请选择ZIP格式的更新包文件";
+                resultDiv.innerText = "❌ 请先选择ZIP格式的更新包文件";
                 resultDiv.style.color = "#E74C3C";
                 return;
             }
             
             const file = fileInput.files[0];
-            if(!file.name.toLowerCase().endsWith('.zip')){
-                resultDiv.innerText = "仅支持ZIP格式的更新包";
+            if(!file || !file.name.toLowerCase().endsWith('.zip')){
+                resultDiv.innerText = "❌ 仅支持ZIP格式的更新包";
                 resultDiv.style.color = "#E74C3C";
                 return;
             }
@@ -1619,8 +1619,15 @@
             resultDiv.innerText = "⏳ 上传中...";
             resultDiv.style.color = "#42C9D8";
             
+            // 重新检查文件（confirm后文件可能被重置）
+            if(!fileInput.files || fileInput.files.length === 0){
+                resultDiv.innerText = "❌ 文件选择被重置，请重新选择文件";
+                resultDiv.style.color = "#E74C3C";
+                return;
+            }
+            
             const formData = new FormData();
-            formData.append("update_file", file);
+            formData.append("update_file", fileInput.files[0]);
             
             try{
                 const res = await fetch("/admin/upload_update", {
