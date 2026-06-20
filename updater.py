@@ -55,6 +55,7 @@ class UpdateResult:
     used_source: Optional[str] = None
     backup_path: Optional[str] = None
     updated_files: Optional[List[str]] = None
+    update_method: Optional[str] = None  # 'git', 'zip_download', 'zip_upload'
 
 
 class UpdaterError(Exception):
@@ -462,6 +463,120 @@ class Updater:
             logger.error(f'恢复备份失败: {e}')
             return False
     
+    def _download_zip(self, source: UpdateSource) -> Tuple[bool, str, str]:
+        """
+        从指定源下载ZIP更新包
+        
+        Returns:
+            (success, zip_path, error_message)
+        """
+        try:
+            # 构建ZIP下载URL
+            if source.id == 'gitee' or 'gitee.com' in self.remote_repo_url:
+                zip_url = f'https://gitee.com/weiwu001/MC-Schedule/repository/archive/{self.default_branch}.zip'
+            else:
+                zip_url = f'https://github.com/WEIWU-001/MC-Schedule/archive/refs/heads/{self.default_branch}.zip'
+            
+            # 如果有镜像，使用镜像URL
+            if source.type == 'mirror' and source.url:
+                zip_url = zip_url.replace('https://github.com', source.url)
+            
+            logger.info(f'正在从 {source.name} 下载ZIP: {zip_url}')
+            
+            # 创建临时目录
+            temp_dir = tempfile.mkdtemp(prefix='update_download_')
+            zip_path = os.path.join(temp_dir, 'update.zip')
+            
+            # 下载文件
+            req = urllib.request.Request(zip_url)
+            req.add_header('User-Agent', 'MC-Schedule-Updater/1.0')
+            
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                with open(zip_path, 'wb') as f:
+                    while True:
+                        chunk = resp.read(8192)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+            
+            # 验证ZIP文件
+            if not zipfile.is_zipfile(zip_path):
+                shutil.rmtree(temp_dir)
+                return False, '', '下载的文件不是有效的ZIP格式'
+            
+            logger.info(f'ZIP下载成功: {zip_path}')
+            return True, zip_path, ''
+            
+        except urllib.error.HTTPError as e:
+            logger.error(f'下载ZIP HTTP错误: {e.code}')
+            return False, '', f'HTTP {e.code}'
+        except urllib.error.URLError as e:
+            logger.error(f'下载ZIP网络错误: {e.reason}')
+            return False, '', str(e.reason)
+        except Exception as e:
+            logger.error(f'下载ZIP异常: {e}')
+            return False, '', str(e)
+    
+    def _apply_zip_update(self, zip_path: str) -> UpdateResult:
+        """
+        应用ZIP更新包
+        
+        Args:
+            zip_path: ZIP文件路径
+            
+        Returns:
+            UpdateResult对象
+        """
+        try:
+            # 解压
+            extract_dir = tempfile.mkdtemp(prefix='update_extract_')
+            
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+            
+            # 检查是否有嵌套目录
+            extracted_items = os.listdir(extract_dir)
+            if len(extracted_items) == 1 and os.path.isdir(os.path.join(extract_dir, extracted_items[0])):
+                content_dir = os.path.join(extract_dir, extracted_items[0])
+            else:
+                content_dir = extract_dir
+            
+            # 更新文件
+            updated_files = []
+            for root, dirs, files in os.walk(content_dir):
+                # 排除目录
+                dirs[:] = [d for d in dirs if d not in self.EXCLUDE_DIRS]
+                
+                for filename in files:
+                    if filename in self.EXCLUDE_FILES:
+                        continue
+                    
+                    src_path = os.path.join(root, filename)
+                    rel_path = os.path.relpath(src_path, content_dir)
+                    dst_path = os.path.join(self.project_root, rel_path)
+                    
+                    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                    shutil.copy2(src_path, dst_path)
+                    updated_files.append(rel_path)
+            
+            # 清理临时文件
+            shutil.rmtree(extract_dir)
+            os.remove(zip_path)
+            
+            return UpdateResult(
+                success=True,
+                message='ZIP更新成功！请重启服务器以应用更改',
+                updated_files=updated_files,
+                update_method='zip_download'
+            )
+            
+        except Exception as e:
+            logger.error(f'应用ZIP更新失败: {e}')
+            return UpdateResult(
+                success=False,
+                message=f'应用ZIP更新失败: {str(e)}'
+            )
+    
     def do_update(self, source_id: str = '', create_backup: bool = True) -> UpdateResult:
         """
         执行更新
@@ -543,7 +658,8 @@ class Updater:
                             new_version=new_commit[:7],
                             output=stdout,
                             used_source=used_source_name,
-                            backup_path=backup_path
+                            backup_path=backup_path,
+                            update_method='git'
                         )
                     else:
                         output_messages.append(f'{source.name}: {stderr or stdout}')
@@ -562,6 +678,120 @@ class Updater:
                 message=f'更新失败: {str(e)}',
                 backup_path=backup_path
             )
+    
+    def hybrid_update(self, source_id: str = '', create_backup: bool = True) -> UpdateResult:
+        """
+        混合更新策略：先尝试git，失败则下载ZIP包
+        
+        流程：
+        1. 尝试git pull更新
+        2. 如果git失败，尝试下载ZIP包并应用
+        3. 如果都失败，提示手动上传ZIP
+        
+        Args:
+            source_id: 指定更新源ID
+            create_backup: 是否创建备份
+            
+        Returns:
+            UpdateResult对象
+        """
+        current_commit, current_branch = self.get_current_version()
+        backup_path = None
+        
+        # 创建备份
+        if create_backup:
+            backup_path = self.create_backup()
+            if not backup_path:
+                return UpdateResult(
+                    success=False,
+                    message='创建备份失败，取消更新以保护数据'
+                )
+        
+        # 阶段1：尝试git更新
+        logger.info('阶段1：尝试git更新...')
+        git_result = self.do_update(source_id=source_id, create_backup=False)
+        
+        if git_result.success:
+            # 清理备份
+            if backup_path and os.path.exists(backup_path):
+                try:
+                    shutil.rmtree(backup_path)
+                except:
+                    pass
+            git_result.backup_path = backup_path
+            return git_result
+        
+        logger.info(f'git更新失败: {git_result.message}')
+        
+        # 阶段2：尝试下载ZIP包
+        logger.info('阶段2：尝试下载ZIP更新包...')
+        
+        # 确定要尝试的源
+        sources_to_try = []
+        if source_id:
+            selected_source = next((s for s in self.update_sources if s.id == source_id), None)
+            if selected_source:
+                sources_to_try.append(selected_source)
+        else:
+            sources_to_try = list(self.update_sources)
+        
+        for source in sources_to_try:
+            logger.info(f'尝试从 {source.name} 下载ZIP...')
+            success, zip_path, error = self._download_zip(source)
+            
+            if success:
+                logger.info(f'从 {source.name} 下载ZIP成功，准备应用更新...')
+                zip_result = self._apply_zip_update(zip_path)
+                
+                if zip_result.success:
+                    # 更新VERSION文件
+                    try:
+                        version_file = os.path.join(self.project_root, 'VERSION')
+                        if os.path.exists(version_file):
+                            with open(version_file, 'r', encoding='utf-8') as f:
+                                current_version = f.read().strip()
+                            # 增加补丁版本号
+                            version_parts = current_version.lstrip('v').split('.')
+                            if len(version_parts) == 3:
+                                version_parts[2] = str(int(version_parts[2]) + 1)
+                                new_version = 'v' + '.'.join(version_parts)
+                                with open(version_file, 'w', encoding='utf-8') as f:
+                                    f.write(new_version)
+                                zip_result.new_version = new_version
+                    except:
+                        pass
+                    
+                    # 清理备份
+                    if backup_path and os.path.exists(backup_path):
+                        try:
+                            shutil.rmtree(backup_path)
+                        except:
+                            pass
+                    
+                    zip_result.backup_path = backup_path
+                    zip_result.used_source = source.name
+                    return zip_result
+                else:
+                    logger.warning(f'应用ZIP更新失败: {zip_result.message}')
+            else:
+                logger.warning(f'从 {source.name} 下载ZIP失败: {error}')
+        
+        # 阶段3：所有自动方式都失败，提示手动上传
+        logger.info('阶段3：所有自动更新方式均失败')
+        
+        # 恢复备份（如果有）
+        if backup_path and os.path.exists(backup_path):
+            self.restore_backup(backup_path)
+        
+        return UpdateResult(
+            success=False,
+            message='自动更新失败。git连接超时，且无法下载ZIP包。\n\n' +
+                    '建议：\n' +
+                    '1. 在服务器配置代理（HTTP_PROXY=http://127.0.0.1:7890）\n' +
+                    '2. 手动下载更新包并上传\n' +
+                    '3. 使用"📦 上传更新包"功能手动更新',
+            backup_path=backup_path
+        )
     
     def upload_update(self, zip_file, create_backup: bool = True) -> UpdateResult:
         """
@@ -646,7 +876,8 @@ class Updater:
                 success=True,
                 message='更新包上传成功！请重启服务器以应用更改',
                 updated_files=updated_files,
-                backup_path=backup_path
+                backup_path=backup_path,
+                update_method='zip_upload'
             )
             
         except Exception as e:

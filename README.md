@@ -95,8 +95,8 @@ MAIL_USE_TLS=true
 MAIL_USERNAME=你的QQ邮箱@qq.com
 MAIL_PASSWORD=你的邮箱授权码（不是密码！）
 
-# 超级管理员ID（等注册后填）
-SUPER_ADMIN_ID=1
+# 最高管理员昵称（使用此昵称注册自动成为超级管理员）
+SUPER_ADMIN_ID=惟五
 ```
 
 ### 🎉 启动服务
@@ -116,11 +116,9 @@ python app.py
 
 ### 🔧 第一步：初始化配置
 
-1. 启动服务后，先注册一个账号
-2. 打开数据库工具（比如 DB Browser for SQLite），找到 `database.db`
-3. 在 `users` 表中找到你注册的用户，记一下 `id`
-4. 把这个 `id` 填到 `.env` 的 `SUPER_ADMIN_ID` 里
-5. 重启服务，现在你就是超级管理员啦！
+1. 启动服务后，先配置 `.env` 文件中的 `SUPER_ADMIN_ID`
+2. 使用与 `SUPER_ADMIN_ID` 相同的昵称注册账号
+3. 注册成功后自动成为超级管理员！
 
 ### 👤 第二步：用户注册
 
@@ -209,10 +207,14 @@ MC-Schedule/
 
 ---
 
-## 💬 联系作者
+## 💬 联系我们
 
-有问题随时找我！  
-（可以在这里写你的联系方式）
+有问题随时找我们！
+
+- 🐧 **QQ群**：776423792
+- 📧 **邮箱**：weiwu@wwdjia.work
+
+欢迎加入QQ群交流讨论！🎉
 
 ---
 

@@ -9,7 +9,6 @@ import os
 import time
 import logging
 from logging.handlers import RotatingFileHandler
-import json # for TMS counter persistence
 import shutil
 import io
 import csv
@@ -125,13 +124,6 @@ server_status_cache = {}
 SERVER_STATUS_CACHE_DURATION = 10 * 60  # 10分钟缓存
 
 
-# 导入腾讯云 SDK
-from tencentcloud.common import credential
-from tencentcloud.common.profile.client_profile import ClientProfile
-from tencentcloud.common.profile.http_profile import HttpProfile
-from tencentcloud.common.exception.tencent_cloud_sdk_exception import TencentCloudSDKException
-from tencentcloud.tms.v20201229.tms_client import TmsClient
-from tencentcloud.tms.v20201229.models import TextModerationRequest
 import smtplib
 from email.mime.text import MIMEText
 from email.header import Header
@@ -302,107 +294,20 @@ def log_security(remote_addr, action, target, user_id=None, detail=None, level='
 
 # ===================== 邮箱池配置 =====================
 # 配置从 config.py 中读取
-from config import EMAIL_POOL, TENCENT_SECRET_ID, TENCENT_SECRET_KEY, TMS_FREE_LIMIT, SUPER_ADMIN_ID
-TMS_TOTAL_LIMIT = TMS_FREE_LIMIT
-
-# TMS 计数器文件
-TMS_STATUS_FILE = "tms_status.json"
-
-def load_tms_status():
-    """加载 TMS 调用计数状态"""
-    if os.path.exists(TMS_STATUS_FILE):
-        with open(TMS_STATUS_FILE, "r") as f:
-            return json.load(f)
-    return {"count": 0, "tms_status": "active", "last_update_date": str(date.today())}
-
-def save_tms_status(status):
-    """保存 TMS 调用计数状态"""
-    with open(TMS_STATUS_FILE, "w") as f:
-        json.dump(status, f)
+from config import EMAIL_POOL, SUPER_ADMIN_ID
 
 
 # ===================== 内容审核模块 =====================
-def tms_moderation(text):
-    """使用腾讯云 TMS 进行文本审核"""
-    if not TENCENT_SECRET_ID or not TENCENT_SECRET_KEY:
-        print("[TMS] 警告: 未配置腾讯云 SecretId 或 SecretKey，跳过 TMS 审核。")
-        return {"action": "pass", "reason": "未配置"}
-
-    status = load_tms_status()
-
-    if status["tms_status"] == "exhausted":
-        print(f"[TMS] 已达到总调用限制 ({TMS_TOTAL_LIMIT} 条)，TMS 服务已停止。请更换 API 密钥或充值。")
-        return {"action": "exhausted", "reason": "达到总调用限制"}
-
-    if status["count"] >= TMS_TOTAL_LIMIT:
-        status["tms_status"] = "exhausted"
-        save_tms_status(status)
-        print(f"[TMS] 已达到总调用限制 ({TMS_TOTAL_LIMIT} 条)，TMS 服务已停止。请更换 API 密钥或充值。")
-        return {"action": "exhausted", "reason": "达到总调用限制"}
-
-    try:
-        cred = credential.Credential(TENCENT_SECRET_ID, TENCENT_SECRET_KEY)
-        httpProfile = HttpProfile()
-        httpProfile.endpoint = "tms.tencentcloudapi.com"
-
-        clientProfile = ClientProfile()
-        clientProfile.httpProfile = httpProfile
-        client = TmsClient(cred, "ap-guangzhou", clientProfile) # 假设区域为广州，可根据实际情况调整
-
-        req = TextModerationRequest()
-        req.Content = text.encode("utf-8").hex() # 文本内容需要进行hex编码
-
-        resp = client.TextModeration(req)
-
-        # 增加计数
-        status["count"] += 1
-        save_tms_status(status)
-
-        # 解析响应
-        # 更多详细信息请参考腾讯云文档：https://cloud.tencent.com/document/product/1124/51871
-        if resp.Suggestion == "Block":
-            print(f"[TMS] 评论被阻止: {text[:50]}...")
-            return {"action": "block", "reason": resp.Keywords}
-        elif resp.Suggestion == "Review":
-            print(f"[TMS] 评论需要人工审核: {text[:50]}...")
-            return {"action": "review", "reason": resp.Keywords}
-        else:
-            return {"action": "pass", "reason": ""}
-    except TencentCloudSDKException as err:
-        print(f"[TMS] 调用失败: {err}")
-        return {"action": "error", "reason": str(err)}
-    except Exception as e:
-        print(f"[TMS] 发生未知错误: {e}")
-        return {"action": "error", "reason": str(e)}
-
 def perform_content_moderation(content):
-    """执行内容审核，腾讯云 TMS -> 本地关键词过滤"""
+    """执行内容审核，使用本地关键词过滤"""
     try:
-        # 1. 本地关键词过滤 (始终执行)
+        # 本地关键词过滤
         if check_for_keywords(content):
             return {"action": "block", "reason": "本地关键词过滤"}
-
-        # 2. 腾讯云 TMS 审核
-        tms_result = tms_moderation(content)
-        if tms_result["action"] == "block":
-            return tms_result
-        elif tms_result["action"] == "review":
-            return {"action": "block", "reason": "TMS 人工审核建议"}
-        elif tms_result["action"] == "exhausted":
-            print("[审核] TMS 已达到总调用限制，后续评论将仅使用本地关键词过滤。")
-            return {"action": "pass", "reason": "TMS 已达限制，本地关键词通过"}
-        elif tms_result["action"] == "error":
-            print(f"[审核] TMS 调用失败，原因: {tms_result['reason']}。后续评论将仅使用本地关键词过滤。")
-            return {"action": "pass", "reason": "TMS 异常，本地关键词通过"}
         
-        # 3. 如果 TMS 通过，则内容通过审核
-        return {"action": "pass", "reason": "TMS 通过"}
-
-    except TencentCloudSDKException as err:
-        print(f"[TMS] 调用失败: {err}，转为辅助过滤。")
-        return {"action": "error", "reason": str(err)}
+        return {"action": "pass", "reason": "本地关键词通过"}
     except Exception as e:
-        print(f"[TMS] 发生未知错误: {e}，转为辅助过滤。")
+        print(f"[审核] 发生未知错误: {e}")
         return {"action": "error", "reason": str(e)}
 
 
@@ -429,8 +334,28 @@ def init_db(admin_username, admin_password, admin_email):
                    nickname TEXT, 
                    pwd TEXT, 
                    email TEXT UNIQUE, 
+                   avatar TEXT,
                    verified INTEGER DEFAULT 0,
+                   reg_time TEXT,
                    login_method INTEGER DEFAULT 0)''')  # login_method: 0-数字ID, 1-邮箱
+    
+    # 添加新字段（如果不存在）
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN avatar TEXT")
+    except:
+        pass
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN reg_time TEXT")
+    except:
+        pass
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN default_contact_type TEXT")
+    except:
+        pass
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN default_contact_value TEXT")
+    except:
+        pass
 
     # 登录尝试记录表（防暴力破解）
     c.execute('''CREATE TABLE IF NOT EXISTS login_attempts
@@ -509,6 +434,8 @@ def init_db(admin_username, admin_password, admin_email):
                    uid TEXT,
                    server_ip TEXT,
                    qq_group TEXT,
+                   default_contact_type TEXT,
+                   default_contact_value TEXT,
                    status INTEGER DEFAULT 0,  -- 0: 待审核, 1: 已批准, 2: 已拒绝
                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                    FOREIGN KEY (uid) REFERENCES users(id))''')
@@ -531,23 +458,6 @@ def init_db(admin_username, admin_password, admin_email):
                    FOREIGN KEY (user_id) REFERENCES users(id),
                    FOREIGN KEY (schedule_id) REFERENCES schedules(id))''')
     
-    # 主论坛评论表（简化版）
-    c.execute('''CREATE TABLE IF NOT EXISTS forum_comments
-                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   uid TEXT,
-                   content TEXT,
-                   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                   FOREIGN KEY (uid) REFERENCES users(id))''')
-    
-    # 档期小论坛评论表（简化版）
-    c.execute('''CREATE TABLE IF NOT EXISTS schedule_comments
-                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   schedule_id INTEGER,
-                   uid TEXT,
-                   content TEXT,
-                   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                   FOREIGN KEY (schedule_id) REFERENCES schedules(id),
-                   FOREIGN KEY (uid) REFERENCES users(id))''')
     
     # 关键词表
     c.execute('''CREATE TABLE IF NOT EXISTS keywords
@@ -754,7 +664,32 @@ def init_db(admin_username, admin_password, admin_email):
                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                    FOREIGN KEY (uid) REFERENCES users(id),
                    FOREIGN KEY (reward_id) REFERENCES rewards(id))''')
-    
+
+    # ==================== 公告系统表 ====================
+    c.execute('''CREATE TABLE IF NOT EXISTS announcements
+                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   title TEXT NOT NULL,
+                   content TEXT NOT NULL,
+                   image_url TEXT,
+                   type TEXT DEFAULT 'notice',
+                   priority INTEGER DEFAULT 0,
+                   enabled INTEGER DEFAULT 1,
+                   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                   updated_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
+
+    # 用户公告阅读记录表
+    c.execute('''CREATE TABLE IF NOT EXISTS announcement_read
+                  (uid TEXT,
+                   announcement_id INTEGER,
+                   read_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                   PRIMARY KEY (uid, announcement_id))''')
+
+    # 为现有公告表添加image_url字段
+    try:
+        c.execute("ALTER TABLE announcements ADD COLUMN image_url TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     # 初始化默认配置：注册人数显示开关（默认关闭）
     c.execute("INSERT OR IGNORE INTO system_config (key, value) VALUES (?, ?)", 
               ("show_user_count", "0"))
@@ -778,6 +713,8 @@ def init_db(admin_username, admin_password, admin_email):
               ("site_announcement", "公告：全年档期管理 | 注册需邮箱验证，权限划分：最高管理员 / 档主 / 普通成员"))
     c.execute("INSERT OR IGNORE INTO system_config (key, value) VALUES (?, ?)", 
               ("footer_text", "© 2026 MC整合包档期排期站 | 仅供学习交流使用"))
+    c.execute("INSERT OR IGNORE INTO system_config (key, value) VALUES (?, ?)", 
+              ("site_start_time", "2026-01-01 00:00:00"))
     
     conn.commit()
     
@@ -2250,10 +2187,6 @@ def validate_contact_value(contact_value, contact_type):
         if not re.match(email_pattern, contact_value):
             return False, "邮箱格式不正确"
     
-    # 检查敏感词
-    if check_for_keywords(contact_value):
-        return False, "联系方式包含敏感词，请重新输入"
-    
     return True, ""
 
 def sanitize_input(content, max_length=None):
@@ -2662,6 +2595,7 @@ def rate_limit_decorator(max_requests=RATE_LIMIT, window=RATE_LIMIT_WINDOW):
 def refresh_all_server_status():
     """定时刷新所有服务器状态缓存"""
     global server_status_cache
+    import json
     
     print(f"[MC状态刷新] 开始刷新所有服务器状态缓存...")
     
@@ -2707,32 +2641,112 @@ def refresh_all_server_status():
                 port = int(parts[1]) if len(parts) > 1 else 25565
                 
                 import socket
+                import struct
+                
+                def write_varint(value):
+                    output = bytearray()
+                    while True:
+                        temp = value & 0x7F
+                        value >>= 7
+                        if value != 0:
+                            temp |= 0x80
+                        output.append(temp)
+                        if value == 0:
+                            break
+                    return output
+                
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(5)
                 
                 start_time = time.time()
-                sock.connect((server_host, port))
+                result = sock.connect_ex((server_host, port))
                 latency = int((time.time() - start_time) * 1000)
                 
-                # 发送握手包
-                handshake = create_minecraft_handshake(server_host, port)
-                sock.send(handshake)
+                if result != 0:
+                    sock.close()
+                    raise Exception("连接失败")
                 
-                # 接收响应
-                data = sock.recv(1024)
+                # 发送握手包
+                protocol_version = 754
+                server_address = server_host.encode('utf-8')
+                
+                packet_data = bytearray()
+                packet_data.extend(write_varint(7 + len(server_address)))
+                packet_data.extend(write_varint(0))
+                packet_data.extend(write_varint(protocol_version))
+                packet_data.extend(write_varint(len(server_address)))
+                packet_data.extend(server_address)
+                packet_data.extend(struct.pack('>H', port))
+                packet_data.extend(write_varint(1))
+                
+                sock.sendall(packet_data)
+                
+                status_packet = bytearray([1, 0])
+                sock.sendall(status_packet)
+                
+                response = bytearray()
+                sock.settimeout(5)
+                while True:
+                    try:
+                        chunk = sock.recv(8192)
+                        if not chunk:
+                            break
+                        response.extend(chunk)
+                        # 如果已经收到完整响应，可以提前结束
+                        if response.find(b'\n') >= 0:  # Minecraft JSON通常以\n结尾
+                            break
+                    except socket.timeout:
+                        break
+                
                 sock.close()
                 
-                if data:
+                if response:
                     query_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    result_data = {
-                        'ok': 1,
-                        'version': '在线',
-                        'motd': '服务器在线',
-                        'players_online': '0',
-                        'players_max': '0',
-                        'latency': latency,
-                        'query_time': query_time
-                    }
+                    
+                    # 解析响应数据（跳过varint长度前缀）
+                    try:
+                        # 找到JSON开始的位置（通常是第一个'{'）
+                        json_start = response.find(b'{')
+                        if json_start >= 0:
+                            json_bytes = response[json_start:]
+                            # 尝试多种编码
+                            for encoding in ['utf-8', 'latin-1', 'gbk']:
+                                try:
+                                    json_str = json_bytes.decode(encoding)
+                                    break
+                                except UnicodeDecodeError:
+                                    continue
+                            else:
+                                raise Exception("无法解码响应")
+                            
+                            status_data = json.loads(json_str)
+                            
+                            version_name = status_data.get('version', {}).get('name', '未知')
+                            players_online = status_data.get('players', {}).get('online', 0)
+                            players_max = status_data.get('players', {}).get('max', 0)
+                            motd = status_data.get('description', {}).get('text', '') or status_data.get('description', '')
+                            
+                            result_data = {
+                                'ok': 1,
+                                'version': version_name,
+                                'motd': motd,
+                                'players_online': str(players_online),
+                                'players_max': str(players_max),
+                                'latency': latency,
+                                'query_time': query_time
+                            }
+                        else:
+                            raise Exception("无法解析响应")
+                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                        result_data = {
+                            'ok': 1,
+                            'version': '解析失败',
+                            'motd': f'无法解析服务器响应: {str(e)[:30]}',
+                            'players_online': '0',
+                            'players_max': '0',
+                            'latency': latency,
+                            'query_time': query_time
+                        }
                     
                     # 缓存结果
                     cache_key = ip
@@ -2742,6 +2756,8 @@ def refresh_all_server_status():
                     }
                     refreshed_count += 1
                     print(f"[MC状态刷新] 已刷新: {ip}")
+                else:
+                    raise Exception("无响应")
                     
             except Exception as e:
                 # 查询失败也缓存失败状态，避免重复查询
@@ -3396,13 +3412,13 @@ def index():
                            role_admin=ROLE_ADMIN,
                            role_super_admin=ROLE_SUPER_ADMIN)
 
-# ===================== 路由：积分中心页面 =====================
-@app.route('/points')
-def points_page():
+# ===================== 路由：个人设置页面 =====================
+@app.route('/settings')
+def settings_page():
     current_user = session.get('user', '')
     if not current_user:
         return redirect(url_for('index'))
-    return render_template('points.html')
+    return render_template('settings.html')
 
 # ===================== 路由：独立Admin后台（仅最高管理员可访问） =====================
 @app.route('/admin')
@@ -4206,7 +4222,7 @@ def get_site_title():
 def get_site_config():
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
-    c.execute("SELECT key, value FROM system_config WHERE key IN ('site_title', 'site_announcement', 'footer_text', 'maintenance_mode', 'maintenance_message', 'background_image')")
+    c.execute("SELECT key, value FROM system_config WHERE key IN ('site_title', 'site_announcement', 'footer_text', 'maintenance_mode', 'maintenance_message', 'background_image', 'site_start_time')")
     rows = c.fetchall()
     conn.close()
     
@@ -4330,7 +4346,6 @@ def get_year_schedules():
     conn.close()
     return jsonify(schedules)
 
-@app.route('/get_reservation_ranking', methods=['POST'])
 def get_reservation_ranking():
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
@@ -4738,7 +4753,8 @@ def get_all_users():
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
     c.execute('''
-        SELECT u.id, u.uid, u.nickname, u.email, ur.role, u.is_muted, u.is_banned, u.violation_count
+        SELECT u.id, u.uid, u.nickname, u.email, ur.role, u.is_muted, u.is_banned, u.violation_count,
+               u.default_contact_type, u.default_contact_value
         FROM users u
         LEFT JOIN user_role ur ON u.id = ur.uid
         ORDER BY u.id
@@ -4753,7 +4769,9 @@ def get_all_users():
             "role": row[4] if row[4] is not None else ROLE_NORMAL,
             "is_muted": bool(row[5]) if row[5] is not None else False,
             "is_banned": bool(row[6]) if row[6] is not None else False,
-            "violation_count": row[7] if row[7] is not None else 0
+            "violation_count": row[7] if row[7] is not None else 0,
+            "default_contact_type": row[8],
+            "default_contact_value": row[9]
         })
     conn.close()
     return jsonify(user_list)
@@ -5559,10 +5577,12 @@ def register():
 
         uid = generate_uid(conn)
         user_id = str(uid)
+        import datetime
+        reg_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
         
         hashed_password = bcrypt.hashpw(pwd.encode(), bcrypt.gensalt()).decode()
-        c.execute("INSERT INTO users (id, uid, nickname, pwd, email, verified) VALUES (?, ?, ?, ?, ?, 1)", 
-                  (user_id, uid, nickname, hashed_password, email))
+        c.execute("INSERT INTO users (id, uid, nickname, pwd, email, verified, reg_time) VALUES (?, ?, ?, ?, ?, 1, ?)", 
+                  (user_id, uid, nickname, hashed_password, email, reg_time))
         
         if nickname == SUPER_ADMIN_ID:
             c.execute("INSERT INTO user_role (uid, role) VALUES (?, ?)", (user_id, ROLE_SUPER_ADMIN))
@@ -5571,8 +5591,6 @@ def register():
             c.execute("INSERT INTO user_role (uid, role) VALUES (?, ?)", (user_id, ROLE_NORMAL))
         
         conn.commit()
-        
-        add_user_points(user_id, 50, '新用户注册奖励')
         
         send_notification(user_id, "🎉 欢迎加入MC档期排期站！", 
                          f"""亲爱的 {nickname}：
@@ -7233,16 +7251,25 @@ def apply_op():
     data = request.json or {}
     server_ip = data.get("server_ip", "").strip()
     contact = data.get("contact", "").strip()
+    default_contact_type = data.get("default_contact_type", "").strip()
+    default_contact_value = data.get("default_contact_value", "").strip()
     
     if not server_ip:
         conn.close()
         return jsonify({'ok': 0, 'msg': '请填写服务器IP地址'})
     
+    # 验证默认联系方式
+    if default_contact_type and default_contact_value:
+        is_valid, error_msg = validate_contact_value(default_contact_value, default_contact_type)
+        if not is_valid:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': f'默认联系方式错误：{error_msg}'})
+    
     try:
         c.execute('''INSERT INTO op_applications
-                     (uid, server_ip, qq_group, status, created_at)
-                     VALUES (?, ?, ?, 0, ?)''', 
-                  (uid, server_ip, contact, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                     (uid, server_ip, qq_group, default_contact_type, default_contact_value, status, created_at)
+                     VALUES (?, ?, ?, ?, ?, 0, ?)''', 
+                  (uid, server_ip, contact, default_contact_type, default_contact_value, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -7301,13 +7328,15 @@ def approve_op_application():
     
     try:
         # 获取申请信息
-        c.execute('''SELECT uid FROM op_applications WHERE id=?''', (application_id,))
+        c.execute('''SELECT uid, default_contact_type, default_contact_value FROM op_applications WHERE id=?''', (application_id,))
         row = c.fetchone()
         if not row:
             conn.close()
             return jsonify({'ok': 0, 'msg': '申请不存在'})
         
         app_uid = row[0]
+        default_contact_type = row[1]
+        default_contact_value = row[2]
         print(f"[DEBUG] 找到申请，申请人: {app_uid}")
         
         # 获取申请人的邮箱
@@ -7329,6 +7358,11 @@ def approve_op_application():
                 c.execute('''UPDATE user_role SET role=? WHERE uid=?''', (ROLE_OP, app_uid))
             else:
                 c.execute('''INSERT INTO user_role (uid, role) VALUES (?, ?)''', (app_uid, ROLE_OP))
+            
+            # 保存默认联系方式到用户表
+            if default_contact_type and default_contact_value:
+                c.execute('''UPDATE users SET default_contact_type=?, default_contact_value=? WHERE id=?''', 
+                          (default_contact_type, default_contact_value, app_uid))
         
         conn.commit()
         conn.close()
@@ -7349,6 +7383,23 @@ def approve_op_application():
         return jsonify({'ok': 0, 'msg': str(e)})
 
 # ===================== 预约功能API =====================
+
+# 获取用户默认联系方式
+@app.route('/get_default_contact', methods=['POST'])
+def get_default_contact():
+    uid = session.get("user")
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    c.execute('''SELECT default_contact_type, default_contact_value FROM users WHERE id=?''', (uid,))
+    row = c.fetchone()
+    conn.close()
+    
+    if row and row[0] and row[1]:
+        return jsonify({'ok': 1, 'contact_type': row[0], 'contact_value': row[1]})
+    return jsonify({'ok': 0, 'msg': '未设置默认联系方式'})
 
 # 获取用户的预约列表
 @app.route('/get_my_reservations', methods=['POST'])
@@ -7488,11 +7539,6 @@ def create_reservation():
         c.execute('''INSERT INTO reservations (user_id, schedule_id) VALUES (?, ?)''', (uid, schedule_id))
         reservation_id = c.lastrowid
         conn.commit()
-        
-        # 检查是否已获得预约奖励（只奖励一次）
-        c.execute("SELECT COUNT(*) FROM point_transactions WHERE uid=? AND description='预约档期奖励'", (uid,))
-        if c.fetchone()[0] == 0:
-            add_user_points(uid, 20, '预约档期奖励', reservation_id)
         
         # 发送预约成功通知
         send_notification(uid, "✅ 预约成功", 
@@ -7926,154 +7972,6 @@ def debug_email():
     
     return "<pre>" + "\n".join(debug_info) + "</pre>"
 
-# ==================== 主评论区接口 ====================
-
-# 获取主评论区评论
-@app.route("/forum/get_comments", methods=["POST"])
-def forum_get_comments():
-    conn = sqlite3.connect("database.db")
-    c = conn.cursor()
-    c.execute('''SELECT fc.id, fc.uid, u.nickname, u.uid as user_uid, fc.content, fc.created_at 
-                 FROM forum_comments fc
-                 LEFT JOIN users u ON fc.uid = u.id
-                 ORDER BY fc.created_at DESC LIMIT 100''')
-    rows = c.fetchall()
-    conn.close()
-    
-    comments = []
-    for row in rows:
-        comments.append({
-            "id": row[0],
-            "uid": row[1],
-            "nickname": row[2] if row[2] else row[3] if row[3] else row[1],
-            "content": row[4],
-            "created_at": row[5]
-        })
-    return jsonify({"ok": 1, "comments": comments})
-
-# 发表主评论区评论
-@app.route("/forum/create_comment", methods=["POST"])
-def forum_create_comment():
-    uid = session.get("user")
-    if not uid:
-        return jsonify({"ok": 0, "msg": "请先登录！"})
-    
-    # 检查用户是否被禁言
-    is_muted, mute_info = is_user_muted(uid)
-    if is_muted:
-        return jsonify({"ok": 0, "msg": f"您已被禁言，无法发表评论！原因: {mute_info["reason"]}"})
-    
-    # 检查用户是否被封禁
-    if is_user_banned(uid):
-        return jsonify({"ok": 0, "msg": "您的账号已被封禁，无法发表评论！"})
-    
-    data = request.json or {}
-    content = data.get("content", "").strip()
-    
-    if not content:
-        return jsonify({"ok": 0, "msg": "评论内容不能为空！"})
-    
-    # 检查每日发言次数限制
-    conn = sqlite3.connect("database.db")
-    c = conn.cursor()
-    
-    today = datetime.now().strftime('%Y-%m-%d')
-    c.execute("SELECT COUNT(*) FROM forum_comments WHERE uid = ? AND DATE(created_at) = ?", (uid, today))
-    today_count = c.fetchone()[0]
-    
-    role = get_user_role(uid)
-    max_comments_per_day = 20
-    if role >= ROLE_ADMIN:
-        max_comments_per_day = 100
-    
-    if today_count >= max_comments_per_day:
-        conn.close()
-        return jsonify({"ok": 0, "msg": f"今日发言次数已达上限（{max_comments_per_day}条），请明日再试！"})
-    
-    conn.close()
-    
-    # 执行内容审核
-    moderation_result = perform_content_moderation(content)
-    if moderation_result["action"] == "block":
-        # 记录违规
-        violation_type = moderation_result.get("type", "content_security")
-        violation_info = record_violation(uid, content, violation_type)
-        
-        # 构建更清楚的提示消息
-        if violation_info:
-            count = violation_info["count"]
-            action = violation_info["action"]
-            
-            if count == 1:
-                msg = f"⚠️ 内容违规！这是第1次提醒。请注意语言规范！"
-            elif count == 2:
-                msg = f"⚠️ 内容违规！这是第2次警告。继续违规将被禁言！"
-            else:
-                msg = f"⛔ 内容违规！您已被系统自动禁言！请联系管理员申诉。"
-        else:
-            msg = f"评论内容不符合规范: {moderation_result["reason"]}"
-            
-        return jsonify({"ok": 0, "msg": msg})
-    
-    conn = sqlite3.connect("database.db")
-    c = conn.cursor()
-    c.execute('''INSERT INTO forum_comments (uid, content, created_at)
-                 VALUES (?, ?, ?)''',
-              (uid, content, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
-    comment_id = c.lastrowid
-    
-    # 检查今天是否已获得评论奖励（每天一次）
-    today = datetime.now().strftime('%Y-%m-%d')
-    c.execute("SELECT last_comment_reward FROM user_points WHERE uid=?", (uid,))
-    row = c.fetchone()
-    if row:
-        last_reward = row[0] or ''
-        if last_reward != today:
-            add_user_points(uid, 10, '发表评论奖励', comment_id)
-            c.execute("UPDATE user_points SET last_comment_reward=? WHERE uid=?", (today, uid))
-            conn.commit()
-    else:
-        add_user_points(uid, 10, '发表评论奖励', comment_id)
-        c.execute("INSERT INTO user_points (uid, points, total_earned, total_spent, last_comment_reward) VALUES (?, 0, 0, 0, ?)", (uid, today))
-        conn.commit()
-    
-    conn.close()
-    
-    return jsonify({"ok": 1, "comment_id": comment_id, "msg": "评论发表成功！"})
-
-# 删除主评论区评论（管理员/档主）
-@app.route("/forum/delete_comment", methods=["POST"])
-def forum_delete_comment():
-    uid = session.get("user")
-    role = get_user_role(uid)
-    if role not in (ROLE_OP, ROLE_TRUSTED_OP, ROLE_ADMIN, ROLE_SUPER_ADMIN):
-        return jsonify({"ok": 0, "msg": "权限不足，无法删除评论"})
-    
-    data = request.json or {}
-    comment_id = data.get("comment_id")
-    
-    if not comment_id:
-        return jsonify({"ok": 0, "msg": "缺少评论ID"})
-    
-    conn = sqlite3.connect("database.db")
-    c = conn.cursor()
-    
-    if role == ROLE_OP:
-        # 档主只能删除自己的评论
-        c.execute("SELECT uid FROM forum_comments WHERE id=?", (comment_id,))
-        row = c.fetchone()
-        if not row or row[0] != uid:
-            conn.close()
-            return jsonify({"ok": 0, "msg": "权限不足，只能删除自己的评论"})
-            
-    c.execute("DELETE FROM forum_comments WHERE id=?", (comment_id,))
-    conn.commit()
-    conn.close()
-    
-    return jsonify({'ok': 1, 'msg': "评论删除成功"})
-
-
 # ==================== 后台关键词管理接口 ====================
 
 # 获取所有关键词
@@ -8246,8 +8144,16 @@ def admin_delete_keyword():
 
 
 # ==================== 关键词过滤辅助函数 ====================
-def check_for_keywords(content):
-    """检查内容是否包含敏感词（增强版，支持智能检测）"""
+def check_for_keywords(content, allow_contact_info=False):
+    """检查内容是否包含敏感词（增强版，支持智能检测）
+    
+    Args:
+        content: 待检查内容
+        allow_contact_info: 是否允许联系方式（QQ号、微信号等），默认False
+    
+    Returns:
+        bool: 是否包含敏感词
+    """
     if not content or not content.strip():
         return False
     
@@ -8283,213 +8189,55 @@ def check_for_keywords(content):
                                 'KEYWORD_DETECTED', 'SPLIT', detail=f'检测到拆分敏感词: {keyword}')
                     return True
     
-    import re
-    qq_pattern = r'\b[1-9][0-9]{4,10}\b'
-    qq_matches = re.findall(qq_pattern, content)
-    if qq_matches:
-        log_security(request.remote_addr if hasattr(request, 'remote_addr') else '-', 
-                    'KEYWORD_DETECTED', 'QQ_NUMBER', detail=f'检测到QQ号: {qq_matches}')
-        return True
-    
-    wechat_pattern = r'[a-zA-Z][a-zA-Z0-9_-]{5,19}'
-    wechat_matches = re.findall(wechat_pattern, content)
-    if wechat_matches:
-        common_words = {'the', 'and', 'that', 'with', 'this', 'will', 'your', 'from', 'they', 'have', 
-                       'what', 'there', 'their', 'about', 'which', 'when', 'were', 'been', 'some',
-                       'time', 'could', 'would', 'make', 'than', 'first', 'any', 'these', 'give',
-                       'them', 'many', 'then', 'look', 'only', 'come', 'its', 'over', 'think',
-                       'also', 'back', 'after', 'use', 'two', 'how', 'our', 'work', 'well', 'way',
-                       'even', 'new', 'want', 'because', 'most', 'through', 'just', 'small',
-                       'found', 'may', 'still', 'each', 'great', 'good', 'different', 'between',
-                       'under', 'never', 'last', 'little', 'world', 'own', 'right', 'know', 'take',
-                       'people', 'into', 'year', 'could', 'must', 'while', 'before', 'through',
-                       'always', 'though', 'around', 'place', 'against', 'each', 'those', 'she',
-                       'long', 'such', 'great', 'being', 'might', 'house', 'both', 'should',
-                       'during', 'without', 'number', 'however', 'anything', 'together', 'system',
-                       'another', 'little', 'could', 'might', 'through', 'right', 'school', 'never',
-                       'just', 'between', 'around', 'every', 'thing', 'where', 'were', 'world',
-                       'which', 'while', 'house', 'always', 'little', 'system', 'should', 'place'}
-        for match in wechat_matches:
-            if match.lower() not in common_words:
-                log_security(request.remote_addr if hasattr(request, 'remote_addr') else '-', 
-                            'KEYWORD_DETECTED', 'WECHAT_ID', detail=f'检测到疑似微信号: {match}')
-                return True
-    
-    drain_keywords = ['群', '加', '裙', '拉', '进', 'vx', 'wx', '微信', 'qq', '联系方式', '私信']
-    for kw in drain_keywords:
-        if kw in content_lower:
-            for i, c in enumerate(content_lower):
-                if c == kw:
-                    prev_char = content_lower[i-1] if i > 0 else ''
-                    next_char = content_lower[i+1] if i < len(content_lower)-1 else ''
-                    if prev_char.isdigit() or next_char.isdigit() or prev_char.isalpha() or next_char.isalpha():
-                        log_security(request.remote_addr if hasattr(request, 'remote_addr') else '-', 
-                                    'KEYWORD_DETECTED', 'DRAIN', detail=f'检测到引流词+联系方式组合: {kw}')
-                        return True
+    if not allow_contact_info:
+        import re
+        qq_pattern = r'\b[1-9][0-9]{4,10}\b'
+        qq_matches = re.findall(qq_pattern, content)
+        if qq_matches:
+            log_security(request.remote_addr if hasattr(request, 'remote_addr') else '-', 
+                        'KEYWORD_DETECTED', 'QQ_NUMBER', detail=f'检测到QQ号: {qq_matches}')
+            return True
+        
+        wechat_pattern = r'[a-zA-Z][a-zA-Z0-9_-]{5,19}'
+        wechat_matches = re.findall(wechat_pattern, content)
+        if wechat_matches:
+            common_words = {'the', 'and', 'that', 'with', 'this', 'will', 'your', 'from', 'they', 'have', 
+                           'what', 'there', 'their', 'about', 'which', 'when', 'were', 'been', 'some',
+                           'time', 'could', 'would', 'make', 'than', 'first', 'any', 'these', 'give',
+                           'them', 'many', 'then', 'look', 'only', 'come', 'its', 'over', 'think',
+                           'also', 'back', 'after', 'use', 'two', 'how', 'our', 'work', 'well', 'way',
+                           'even', 'new', 'want', 'because', 'most', 'through', 'just', 'small',
+                           'found', 'may', 'still', 'each', 'great', 'good', 'different', 'between',
+                           'under', 'never', 'last', 'little', 'world', 'own', 'right', 'know', 'take',
+                           'people', 'into', 'year', 'could', 'must', 'while', 'before', 'through',
+                           'always', 'though', 'around', 'place', 'against', 'each', 'those', 'she',
+                           'long', 'such', 'great', 'being', 'might', 'house', 'both', 'should',
+                           'during', 'without', 'number', 'however', 'anything', 'together', 'system',
+                           'another', 'little', 'could', 'might', 'through', 'right', 'school', 'never',
+                           'just', 'between', 'around', 'every', 'thing', 'where', 'were', 'world',
+                           'which', 'while', 'house', 'always', 'little', 'system', 'should', 'place'}
+            for match in wechat_matches:
+                if match.lower() not in common_words:
+                    log_security(request.remote_addr if hasattr(request, 'remote_addr') else '-', 
+                                'KEYWORD_DETECTED', 'WECHAT_ID', detail=f'检测到疑似微信号: {match}')
+                    return True
+        
+        drain_keywords = ['群', '加', '裙', '拉', '进', 'vx', 'wx', '微信', 'qq', '联系方式', '私信']
+        for kw in drain_keywords:
+            if kw in content_lower:
+                for i, c in enumerate(content_lower):
+                    if c == kw:
+                        prev_char = content_lower[i-1] if i > 0 else ''
+                        next_char = content_lower[i+1] if i < len(content_lower)-1 else ''
+                        if prev_char.isdigit() or next_char.isdigit() or prev_char.isalpha() or next_char.isalpha():
+                            log_security(request.remote_addr if hasattr(request, 'remote_addr') else '-', 
+                                        'KEYWORD_DETECTED', 'DRAIN', detail=f'检测到引流词+联系方式组合: {kw}')
+                            return True
     
     return False
 
 
 
-
-# 删除档期评论区评论（管理员/档主）
-@app.route("/schedule_forum/delete_comment", methods=["POST"])
-def schedule_forum_delete_comment():
-    uid = session.get("user")
-    role = get_user_role(uid)
-    if role not in (ROLE_OP, ROLE_TRUSTED_OP, ROLE_ADMIN, ROLE_SUPER_ADMIN):
-        return jsonify({"ok": 0, "msg": "权限不足，无法删除评论"})
-    
-    data = request.json or {}
-    comment_id = data.get("comment_id")
-    
-    if not comment_id:
-        return jsonify({"ok": 0, "msg": "缺少评论ID"})
-    
-    conn = sqlite3.connect("database.db")
-    c = conn.cursor()
-    
-    if role == ROLE_OP:
-        # 档主只能删除自己的评论
-        c.execute("SELECT uid FROM schedule_comments WHERE id=?", (comment_id,))
-        row = c.fetchone()
-        if not row or row[0] != uid:
-            conn.close()
-            return jsonify({"ok": 0, "msg": "权限不足，只能删除自己的评论"})
-            
-    c.execute("DELETE FROM schedule_comments WHERE id=?", (comment_id,))
-    conn.commit()
-    conn.close()
-    
-    return jsonify({"ok": 1, "msg": "评论删除成功"})
-
-
-# ==================== 档期评论区接口 ====================
-
-# 获取档期评论区评论
-@app.route("/schedule_forum/get_comments", methods=["POST"])
-def schedule_forum_get_comments():
-    data = request.json or {}
-    schedule_id = data.get("schedule_id")
-    
-    if not schedule_id:
-        return jsonify({"ok": 0, "msg": "参数错误！"})
-    
-    conn = sqlite3.connect("database.db")
-    c = conn.cursor()
-    c.execute('''SELECT sc.id, sc.uid, u.nickname, u.uid as user_uid, sc.content, sc.created_at 
-                 FROM schedule_comments sc
-                 LEFT JOIN users u ON sc.uid = u.id
-                 WHERE sc.schedule_id = ?
-                 ORDER BY sc.created_at DESC LIMIT 50''', (schedule_id,))
-    rows = c.fetchall()
-    conn.close()
-    
-    comments = []
-    for row in rows:
-        comments.append({
-            "id": row[0],
-            "uid": row[1],
-            "nickname": row[2] if row[2] else row[3] if row[3] else row[1],
-            "content": row[4],
-            "created_at": row[5]
-        })
-    return jsonify({"ok": 1, "comments": comments})
-
-# 发表档期评论区评论
-@app.route("/schedule_forum/create_comment", methods=["POST"])
-def schedule_forum_create_comment():
-    uid = session.get("user")
-    if not uid:
-        return jsonify({"ok": 0, "msg": "请先登录！"})
-    
-    # 检查用户是否被禁言
-    is_muted, mute_info = is_user_muted(uid)
-    if is_muted:
-        return jsonify({"ok": 0, "msg": f"您已被禁言，无法发表评论！原因: {mute_info["reason"]}"})
-    
-    # 检查用户是否被封禁
-    if is_user_banned(uid):
-        return jsonify({"ok": 0, "msg": "您的账号已被封禁，无法发表评论！"})
-    
-    data = request.json or {}
-    schedule_id = data.get("schedule_id")
-    content = data.get("content", "").strip()
-    
-    if not schedule_id or not content:
-        return jsonify({"ok": 0, "msg": "评论内容或档期ID不能为空！"})
-    
-    # 检查每日发言次数限制（与主评论区共享计数）
-    conn = sqlite3.connect("database.db")
-    c = conn.cursor()
-    
-    today = datetime.now().strftime('%Y-%m-%d')
-    c.execute("SELECT COUNT(*) FROM forum_comments WHERE uid = ? AND DATE(created_at) = ?", (uid, today))
-    forum_count = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM schedule_comments WHERE uid = ? AND DATE(created_at) = ?", (uid, today))
-    schedule_count = c.fetchone()[0]
-    today_total = forum_count + schedule_count
-    
-    role = get_user_role(uid)
-    max_comments_per_day = 20
-    if role >= ROLE_ADMIN:
-        max_comments_per_day = 100
-    
-    if today_total >= max_comments_per_day:
-        conn.close()
-        return jsonify({"ok": 0, "msg": f"今日发言次数已达上限（{max_comments_per_day}条），请明日再试！"})
-    
-    conn.close()
-    
-    # 执行内容审核
-    moderation_result = perform_content_moderation(content)
-    if moderation_result["action"] == "block":
-        # 记录违规
-        violation_type = moderation_result.get("type", "content_security")
-        violation_info = record_violation(uid, content, violation_type)
-        
-        # 构建更清楚的提示消息
-        if violation_info:
-            count = violation_info["count"]
-            action = violation_info["action"]
-            
-            if count == 1:
-                msg = f"⚠️ 内容违规！这是第1次提醒。请注意语言规范！"
-            elif count == 2:
-                msg = f"⚠️ 内容违规！这是第2次警告。继续违规将被禁言！"
-            else:
-                msg = f"⛔ 内容违规！您已被系统自动禁言！请联系管理员申诉。"
-        else:
-            msg = f"评论内容不符合规范: {moderation_result["reason"]}"
-            
-        return jsonify({"ok": 0, "msg": msg})
-    
-    conn = sqlite3.connect("database.db")
-    c = conn.cursor()
-    c.execute('''INSERT INTO schedule_comments (schedule_id, uid, content, created_at)
-                 VALUES (?, ?, ?, ?)''',
-              (schedule_id, uid, content, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
-    comment_id = c.lastrowid
-    
-    # 检查今天是否已获得评论奖励（每天一次）
-    today = datetime.now().strftime('%Y-%m-%d')
-    c.execute("SELECT last_comment_reward FROM user_points WHERE uid=?", (uid,))
-    row = c.fetchone()
-    if row:
-        last_reward = row[0] or ''
-        if last_reward != today:
-            add_user_points(uid, 10, '发表评论奖励', comment_id)
-            c.execute("UPDATE user_points SET last_comment_reward=? WHERE uid=?", (today, uid))
-            conn.commit()
-    else:
-        add_user_points(uid, 10, '发表评论奖励', comment_id)
-        c.execute("INSERT INTO user_points (uid, points, total_earned, total_spent, last_comment_reward) VALUES (?, 0, 0, 0, ?)", (uid, today))
-        conn.commit()
-    
-    conn.close()
-    
-    return jsonify({"ok": 1, "comment_id": comment_id, "msg": "评论发表成功！"})
 
 # ==================== 安全管理接口 ====================
 
@@ -8672,8 +8420,16 @@ def get_user_info():
     
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
-    c.execute('SELECT uid, nickname, email FROM users WHERE id = ?', (uid,))
+    c.execute('SELECT uid, nickname, email, avatar, reg_time, default_contact_type, default_contact_value FROM users WHERE id = ?', (uid,))
     row = c.fetchone()
+    
+    # 获取用户角色
+    role = 'member'
+    c.execute('SELECT role FROM user_role WHERE uid = ?', (uid,))
+    role_row = c.fetchone()
+    if role_row:
+        role = role_row[0]
+    
     conn.close()
     
     if not row:
@@ -8684,8 +8440,146 @@ def get_user_info():
         'user_id': uid,
         'uid': row[0],
         'nickname': row[1],
-        'email': row[2]
+        'email': row[2],
+        'avatar': row[3],
+        'reg_time': row[4],
+        'role': role,
+        'default_contact_type': row[5],
+        'default_contact_value': row[6]
     })
+
+# 更新用户资料（昵称、头像）
+@app.route('/user/update', methods=['POST'])
+def update_user_profile():
+    uid = session.get("user")
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    data = request.json or {}
+    nickname = data.get('nickname', '').strip()
+    avatar = data.get('avatar', '').strip()
+    default_contact_type = data.get('default_contact_type', '').strip()
+    default_contact_value = data.get('default_contact_value', '').strip()
+    
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    
+    updates = []
+    params = []
+    
+    if nickname:
+        if len(nickname) < 2 or len(nickname) > 20:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': '昵称需在2-20个字符之间'})
+        
+        is_valid, error_msg = validate_nickname(nickname)
+        if not is_valid:
+            conn.close()
+            return jsonify({'ok': 0, 'msg': error_msg})
+        
+        nickname = sanitize_input(nickname, 20)
+        updates.append('nickname = ?')
+        params.append(nickname)
+    
+    if avatar:
+        avatar = sanitize_input(avatar, 500)
+        updates.append('avatar = ?')
+        params.append(avatar)
+    
+    if default_contact_type is not None:
+        updates.append('default_contact_type = ?')
+        params.append(default_contact_type)
+    
+    if default_contact_value is not None:
+        updates.append('default_contact_value = ?')
+        params.append(default_contact_value)
+    
+    if not updates:
+        conn.close()
+        return jsonify({'ok': 0, 'msg': '没有需要更新的内容'})
+    
+    params.append(uid)
+    c.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'ok': 1, 'msg': '更新成功'})
+
+# 修改密码
+@app.route('/user/change-password', methods=['POST'])
+def change_user_password():
+    uid = session.get("user")
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    data = request.json or {}
+    current_password = data.get('current_password', '')
+    new_password = data.get('new_password', '')
+    
+    if not current_password or not new_password:
+        return jsonify({'ok': 0, 'msg': '请填写所有密码字段'})
+    
+    if len(new_password) < 6:
+        return jsonify({'ok': 0, 'msg': '新密码至少6个字符'})
+    
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    
+    c.execute('SELECT pwd FROM users WHERE id = ?', (uid,))
+    row = c.fetchone()
+    
+    if not row:
+        conn.close()
+        return jsonify({'ok': 0, 'msg': '用户不存在'})
+    
+    stored_password = row[0]
+    
+    # 验证当前密码
+    if not bcrypt.checkpw(current_password.encode(), stored_password.encode()):
+        conn.close()
+        return jsonify({'ok': 0, 'msg': '当前密码错误'})
+    
+    # 更新新密码
+    new_hashed = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+    c.execute("UPDATE users SET pwd = ? WHERE id = ?", (new_hashed, uid))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'ok': 1, 'msg': '密码修改成功'})
+
+# 绑定/修改邮箱
+@app.route('/user/bind-email', methods=['POST'])
+def bind_user_email():
+    uid = session.get("user")
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    data = request.json or {}
+    email = data.get('email', '').strip()
+    
+    if not email:
+        return jsonify({'ok': 0, 'msg': '请输入邮箱地址'})
+    
+    # 简单验证邮箱格式
+    import re
+    if not re.match(r'^[^\s@]+@[^\s@]+\.[^\s@]+$', email):
+        return jsonify({'ok': 0, 'msg': '邮箱格式不正确'})
+    
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    
+    # 检查邮箱是否已被其他用户绑定
+    c.execute('SELECT id FROM users WHERE email = ? AND id != ?', (email, uid))
+    if c.fetchone():
+        conn.close()
+        return jsonify({'ok': 0, 'msg': '该邮箱已被其他账号绑定'})
+    
+    # 更新邮箱
+    c.execute("UPDATE users SET email = ? WHERE id = ?", (email, uid))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'ok': 1, 'msg': '邮箱绑定成功'})
 
 # 用户修改昵称
 @app.route('/user/update_nickname', methods=['POST'])
@@ -8738,6 +8632,65 @@ def get_nickname():
         return jsonify({'ok': 0, 'msg': '用户不存在'})
     
     return jsonify({'ok': 1, 'nickname': row[0]})
+
+# 用户修改默认联系方式
+@app.route('/user/update_default_contact', methods=['POST'])
+def update_default_contact():
+    uid = session.get("user")
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    data = request.json or {}
+    contact_type = data.get('contact_type', '').strip()
+    contact_value = data.get('contact_value', '').strip()
+    
+    if not contact_type or not contact_value:
+        return jsonify({'ok': 0, 'msg': '请填写完整的联系方式'})
+    
+    is_valid, error_msg = validate_contact_value(contact_value, contact_type)
+    if not is_valid:
+        return jsonify({'ok': 0, 'msg': error_msg})
+    
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET default_contact_type = ?, default_contact_value = ? WHERE id = ?', 
+              (contact_type, contact_value, uid))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'ok': 1, 'msg': '默认联系方式更新成功'})
+
+# 管理员修改用户默认联系方式
+@app.route('/admin/update_user_contact', methods=['POST'])
+def admin_update_user_contact():
+    current_uid = session.get("user")
+    current_role = get_user_role(current_uid)
+    if current_role not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    data = request.json or {}
+    target_uid = data.get('target_uid', '').strip()
+    contact_type = data.get('contact_type', '').strip()
+    contact_value = data.get('contact_value', '').strip()
+    
+    if not target_uid:
+        return jsonify({'ok': 0, 'msg': '请选择用户'})
+    
+    if not contact_type or not contact_value:
+        return jsonify({'ok': 0, 'msg': '请填写完整的联系方式'})
+    
+    is_valid, error_msg = validate_contact_value(contact_value, contact_type)
+    if not is_valid:
+        return jsonify({'ok': 0, 'msg': error_msg})
+    
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET default_contact_type = ?, default_contact_value = ? WHERE id = ?', 
+              (contact_type, contact_value, target_uid))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'ok': 1, 'msg': '用户默认联系方式更新成功'})
 
 # ===================== 数据管理API =====================
 
@@ -8999,7 +8952,7 @@ def check_update():
     except Exception as e:
         return jsonify({'ok': 0, 'msg': f'检查更新失败: {str(e)}'})
 
-# 执行更新
+# 执行更新（混合策略：git → 下载ZIP → 提示手动上传）
 @app.route('/admin/do_update', methods=['POST'])
 def do_update():
     uid = session.get('user')
@@ -9016,23 +8969,40 @@ def do_update():
         updater = get_updater_from_app(app)
         source_id = request.form.get('source_id', '')
         
-        result = updater.do_update(source_id=source_id)
+        # 使用混合更新策略
+        result = updater.hybrid_update(source_id=source_id)
         
         if result.success:
-            log_security(get_client_ip(), 'SYSTEM_UPDATE', 'GIT', user_id=uid, detail=f'通过 {result.used_source} 更新，新版本: {result.new_version}')
+            # 记录更新方式
+            method_names = {
+                'git': 'Git拉取',
+                'zip_download': 'ZIP下载',
+                'zip_upload': 'ZIP上传'
+            }
+            method_name = method_names.get(result.update_method, result.update_method or '未知')
+            
+            log_security(get_client_ip(), 'SYSTEM_UPDATE', 'HYBRID', user_id=uid, 
+                        detail=f'通过 {method_name}（{result.used_source}）更新，新版本: {result.new_version}')
+            
             return jsonify({
                 'ok': 1,
                 'msg': result.message,
                 'new_version': result.new_version,
                 'output': result.output,
-                'used_mirror': result.used_source
+                'used_source': result.used_source,
+                'update_method': result.update_method,
+                'updated_files': len(result.updated_files) if result.updated_files else 0
             })
         else:
             return jsonify({
                 'ok': 0,
-                'msg': result.message
+                'msg': result.message,
+                'need_manual_upload': True
             })
     except Exception as e:
+        import traceback
+        logger.error(f"更新失败: {str(e)}")
+        logger.error(traceback.format_exc())
         return jsonify({'ok': 0, 'msg': f'更新失败: {str(e)}'})
 
 # 手动上传更新包（无需GitHub）
@@ -9317,509 +9287,36 @@ def delete_feedback():
     except Exception as e:
         return jsonify({'ok': 0, 'msg': f'删除失败: {str(e)}'})
 
-# ==================== 积分系统API ====================
-
-def add_user_points(uid, points, description, related_id=None):
-    try:
-        conn = sqlite3.connect('database.db')
-        c = conn.cursor()
+# ==================== 全局错误收集器 ====================
+@app.after_request
+def collect_errors(response):
+    """全局请求钩子 - 收集所有错误并记录到日志"""
+    # 只记录4xx和5xx错误
+    if response.status_code >= 400:
+        # 获取请求信息
+        method = request.method
+        path = request.path
+        ip = request.remote_addr
+        status = response.status_code
         
-        c.execute('SELECT points, total_earned FROM user_points WHERE uid = ?', (uid,))
-        row = c.fetchone()
+        # 尝试获取响应内容
+        try:
+            response_data = response.get_json()
+            if response_data:
+                error_msg = response_data.get('msg', str(response_data))
+            else:
+                error_msg = response.data.decode('utf-8', errors='ignore')[:200] if response.data else 'No content'
+        except:
+            error_msg = 'Unable to parse response'
         
-        if row:
-            new_points = row[0] + points
-            new_total_earned = row[1] + points
-            c.execute('UPDATE user_points SET points = ?, total_earned = ?, updated_at = CURRENT_TIMESTAMP WHERE uid = ?',
-                      (new_points, new_total_earned, uid))
-        else:
-            c.execute('INSERT INTO user_points (uid, points, total_earned, total_spent) VALUES (?, ?, ?, 0)',
-                      (uid, points, points))
+        # 记录到日志
+        logger.error(f"[错误收集] {method} {path} | 状态:{status} | IP:{ip} | 错误:{error_msg}")
         
-        c.execute('INSERT INTO point_transactions (uid, type, points, description, related_id) VALUES (?, ?, ?, ?, ?)',
-                  (uid, 'earn', points, description, related_id))
-        
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        logger.error(f'[积分] 添加积分失败: {e}')
-        return False
-
-# 获取用户积分
-@app.route('/api/points', methods=['POST'])
-def get_user_points():
-    uid = session.get('user')
-    if not uid:
-        return jsonify({'ok': 0, 'msg': '请先登录'})
+        # 如果是API请求且有session，也记录uid
+        if 'uid' in session:
+            logger.error(f"[错误收集] 用户: {session.get('uid', 'unknown')}")
     
-    try:
-        conn = sqlite3.connect('database.db')
-        c = conn.cursor()
-        
-        c.execute('SELECT points, total_earned, total_spent, last_checkin, checkin_streak FROM user_points WHERE uid = ?', (uid,))
-        row = c.fetchone()
-        
-        if not row:
-            c.execute('INSERT INTO user_points (uid, points, total_earned, total_spent, last_checkin, checkin_streak) VALUES (?, 0, 0, 0, "", 0)', (uid,))
-            conn.commit()
-            points, total_earned, total_spent, last_checkin, checkin_streak = 0, 0, 0, '', 0
-        else:
-            points, total_earned, total_spent, last_checkin, checkin_streak = row
-        
-        conn.close()
-        
-        return jsonify({
-            'ok': 1,
-            'data': {
-                'points': points,
-                'total_earned': total_earned,
-                'total_spent': total_spent,
-                'last_checkin': last_checkin or '',
-                'checkin_streak': checkin_streak or 0
-            }
-        })
-    except Exception as e:
-        return jsonify({'ok': 0, 'msg': f'获取积分失败: {str(e)}'})
-
-# 获取积分记录
-@app.route('/api/points/history', methods=['POST'])
-def get_points_history():
-    uid = session.get('user')
-    if not uid:
-        return jsonify({'ok': 0, 'msg': '请先登录'})
-    
-    try:
-        conn = sqlite3.connect('database.db')
-        c = conn.cursor()
-        
-        c.execute('''SELECT type, points, description, created_at 
-                      FROM point_transactions 
-                      WHERE uid = ? 
-                      ORDER BY created_at DESC 
-                      LIMIT 50''', (uid,))
-        
-        history = []
-        for row in c.fetchall():
-            history.append({
-                'type': row[0],
-                'points': row[1],
-                'description': row[2],
-                'created_at': row[3]
-            })
-        
-        conn.close()
-        
-        return jsonify({'ok': 1, 'data': history})
-    except Exception as e:
-        return jsonify({'ok': 0, 'msg': f'获取积分记录失败: {str(e)}'})
-
-# 每日签到
-@app.route('/api/points/checkin', methods=['POST'])
-def points_checkin():
-    uid = session.get('user')
-    if not uid:
-        return jsonify({'ok': 0, 'msg': '请先登录'})
-    
-    try:
-        conn = sqlite3.connect('database.db')
-        c = conn.cursor()
-        
-        today = datetime.now().strftime('%Y-%m-%d')
-        
-        c.execute('SELECT last_checkin, checkin_streak, points FROM user_points WHERE uid = ?', (uid,))
-        row = c.fetchone()
-        
-        if not row:
-            c.execute('INSERT INTO user_points (uid, points, total_earned, total_spent, last_checkin, checkin_streak) VALUES (?, 0, 0, 0, "", 0)', (uid,))
-            conn.commit()
-            last_checkin, checkin_streak = '', 0
-        else:
-            last_checkin, checkin_streak, _ = row
-        
-        if last_checkin == today:
-            conn.close()
-            return jsonify({'ok': 0, 'msg': '今天已经签到过了'})
-        
-        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-        if last_checkin == yesterday:
-            checkin_streak += 1
-        else:
-            checkin_streak = 1
-        
-        base_points = 10
-        bonus_points = 0
-        
-        if checkin_streak >= 7:
-            bonus_points = 20
-            description = f'每日签到 +{base_points}分，连续签到7天额外奖励 +{bonus_points}分'
-        elif checkin_streak >= 3:
-            bonus_points = 5
-            description = f'每日签到 +{base_points}分，连续签到3天奖励 +{bonus_points}分'
-        else:
-            description = f'每日签到 +{base_points}分'
-        
-        total_points = base_points + bonus_points
-        
-        c.execute('UPDATE user_points SET last_checkin = ?, checkin_streak = ?, points = points + ?, total_earned = total_earned + ?, updated_at = CURRENT_TIMESTAMP WHERE uid = ?',
-                  (today, checkin_streak, total_points, total_points, uid))
-        
-        c.execute('INSERT INTO point_transactions (uid, type, points, description) VALUES (?, ?, ?, ?)',
-                  (uid, 'earn', total_points, description))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            'ok': 1,
-            'msg': f'签到成功！获得 {total_points} 积分',
-            'data': {
-                'points': total_points,
-                'streak': checkin_streak,
-                'description': description
-            }
-        })
-    except Exception as e:
-        return jsonify({'ok': 0, 'msg': f'签到失败: {str(e)}'})
-
-# 获取奖励列表（前台）
-@app.route('/api/rewards', methods=['POST'])
-def get_rewards_list():
-    try:
-        conn = sqlite3.connect('database.db')
-        c = conn.cursor()
-        
-        c.execute('''SELECT id, title, description, points_required, image_url, has_image, stock 
-                      FROM rewards 
-                      WHERE enabled = 1 
-                      ORDER BY sort_order ASC, created_at DESC''')
-        
-        rewards = []
-        for row in c.fetchall():
-            rewards.append({
-                'id': row[0],
-                'title': row[1],
-                'description': row[2],
-                'points_required': row[3],
-                'image_url': row[4],
-                'has_image': row[5],
-                'stock': row[6]
-            })
-        
-        conn.close()
-        
-        return jsonify({'ok': 1, 'data': rewards})
-    except Exception as e:
-        return jsonify({'ok': 0, 'msg': f'获取奖励列表失败: {str(e)}'})
-
-# 兑换奖励
-@app.route('/api/rewards/claim', methods=['POST'])
-def claim_reward():
-    uid = session.get('user')
-    if not uid:
-        return jsonify({'ok': 0, 'msg': '请先登录'})
-    
-    data = request.get_json()
-    reward_id = data.get('reward_id')
-    
-    if not reward_id:
-        return jsonify({'ok': 0, 'msg': '请选择要兑换的奖励'})
-    
-    try:
-        conn = sqlite3.connect('database.db')
-        c = conn.cursor()
-        
-        # 获取奖励信息
-        c.execute('SELECT title, points_required, stock, enabled FROM rewards WHERE id = ?', (reward_id,))
-        reward = c.fetchone()
-        
-        if not reward:
-            conn.close()
-            return jsonify({'ok': 0, 'msg': '奖励不存在'})
-        
-        title, points_required, stock, enabled = reward
-        
-        if not enabled:
-            conn.close()
-            return jsonify({'ok': 0, 'msg': '该奖励已下架'})
-        
-        if stock == 0:
-            conn.close()
-            return jsonify({'ok': 0, 'msg': '该奖励已兑换完毕'})
-        
-        # 获取用户积分
-        c.execute('SELECT points FROM user_points WHERE uid = ?', (uid,))
-        user_points_row = c.fetchone()
-        
-        if not user_points_row:
-            conn.close()
-            return jsonify({'ok': 0, 'msg': '积分不足'})
-        
-        current_points = user_points_row[0]
-        
-        if current_points < points_required:
-            conn.close()
-            return jsonify({'ok': 0, 'msg': f'积分不足，需要 {points_required} 积分'})
-        
-        # 扣除积分
-        new_points = current_points - points_required
-        c.execute('UPDATE user_points SET points = ?, total_spent = total_spent + ? WHERE uid = ?', 
-                  (new_points, points_required, uid))
-        
-        # 记录交易
-        c.execute('''INSERT INTO point_transactions (uid, type, points, description, related_id)
-                      VALUES (?, 'spend', ?, ?, ?)''', 
-                  (uid, -points_required, f'兑换奖励: {title}', reward_id))
-        
-        # 创建兑换记录
-        c.execute('''INSERT INTO reward_claims (uid, reward_id, points_spent, status)
-                      VALUES (?, ?, ?, 0)''', (uid, reward_id, points_required))
-        
-        # 减少库存
-        if stock > 0:
-            c.execute('UPDATE rewards SET stock = stock - 1 WHERE id = ?', (reward_id,))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': 1, 'msg': f'成功兑换「{title}」，消耗 {points_required} 积分'})
-    except Exception as e:
-        return jsonify({'ok': 0, 'msg': f'兑换失败: {str(e)}'})
-
-# ==================== 管理员积分管理API ====================
-
-# 获取所有奖励（管理后台）
-@app.route('/admin/rewards/list', methods=['POST'])
-def admin_get_rewards():
-    uid = session.get('user')
-    if not uid:
-        return jsonify({'ok': 0, 'msg': '请先登录'})
-    
-    role = get_user_role(uid)
-    if role < ROLE_ADMIN:
-        return jsonify({'ok': 0, 'msg': '权限不足'})
-    
-    try:
-        conn = sqlite3.connect('database.db')
-        c = conn.cursor()
-        
-        c.execute('''SELECT id, title, description, points_required, image_url, has_image, stock, sort_order, enabled, created_at 
-                      FROM rewards 
-                      ORDER BY sort_order ASC, created_at DESC''')
-        
-        rewards = []
-        for row in c.fetchall():
-            rewards.append({
-                'id': row[0],
-                'title': row[1],
-                'description': row[2],
-                'points_required': row[3],
-                'image_url': row[4],
-                'has_image': row[5],
-                'stock': row[6],
-                'sort_order': row[7],
-                'enabled': row[8],
-                'created_at': row[9]
-            })
-        
-        conn.close()
-        
-        return jsonify({'ok': 1, 'data': rewards})
-    except Exception as e:
-        return jsonify({'ok': 0, 'msg': f'获取奖励列表失败: {str(e)}'})
-
-# 添加/编辑奖励
-@app.route('/admin/rewards/save', methods=['POST'])
-def admin_save_reward():
-    uid = session.get('user')
-    if not uid:
-        return jsonify({'ok': 0, 'msg': '请先登录'})
-    
-    role = get_user_role(uid)
-    if role < ROLE_ADMIN:
-        return jsonify({'ok': 0, 'msg': '权限不足'})
-    
-    data = request.get_json()
-    reward_id = data.get('id')
-    title = data.get('title', '').strip()
-    description = data.get('description', '').strip()
-    points_required = data.get('points_required', 0)
-    image_url = data.get('image_url', '').strip()
-    has_image = data.get('has_image', 0)
-    stock = data.get('stock', -1)
-    sort_order = data.get('sort_order', 0)
-    enabled = data.get('enabled', 1)
-    
-    if not title:
-        return jsonify({'ok': 0, 'msg': '奖励名称不能为空'})
-    
-    try:
-        conn = sqlite3.connect('database.db')
-        c = conn.cursor()
-        
-        if reward_id:
-            # 更新
-            c.execute('''UPDATE rewards 
-                          SET title = ?, description = ?, points_required = ?, image_url = ?, 
-                              has_image = ?, stock = ?, sort_order = ?, enabled = ?
-                          WHERE id = ?''',
-                      (title, description, points_required, image_url, has_image, stock, sort_order, enabled, reward_id))
-            msg = '奖励更新成功'
-        else:
-            # 新增
-            c.execute('''INSERT INTO rewards (title, description, points_required, image_url, has_image, stock, sort_order, enabled)
-                          VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                      (title, description, points_required, image_url, has_image, stock, sort_order, enabled))
-            msg = '奖励添加成功'
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': 1, 'msg': msg})
-    except Exception as e:
-        return jsonify({'ok': 0, 'msg': f'保存失败: {str(e)}'})
-
-# 删除奖励
-@app.route('/admin/rewards/delete', methods=['POST'])
-def admin_delete_reward():
-    uid = session.get('user')
-    if not uid:
-        return jsonify({'ok': 0, 'msg': '请先登录'})
-    
-    role = get_user_role(uid)
-    if role < ROLE_ADMIN:
-        return jsonify({'ok': 0, 'msg': '权限不足'})
-    
-    data = request.get_json()
-    reward_id = data.get('id')
-    
-    try:
-        conn = sqlite3.connect('database.db')
-        c = conn.cursor()
-        
-        c.execute('DELETE FROM rewards WHERE id = ?', (reward_id,))
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': 1, 'msg': '删除成功'})
-    except Exception as e:
-        return jsonify({'ok': 0, 'msg': f'删除失败: {str(e)}'})
-
-# 给用户添加积分
-@app.route('/admin/points/add', methods=['POST'])
-def admin_add_points():
-    uid = session.get('user')
-    if not uid:
-        return jsonify({'ok': 0, 'msg': '请先登录'})
-    
-    role = get_user_role(uid)
-    if role not in (ROLE_OP, ROLE_TRUSTED_OP, ROLE_ADMIN, ROLE_SUPER_ADMIN):
-        return jsonify({'ok': 0, 'msg': '权限不足'})
-    
-    data = request.get_json()
-    target_uid = data.get('uid')
-    points = data.get('points', 0)
-    description = data.get('description', '管理员手动添加')
-    
-    if not target_uid or points <= 0:
-        return jsonify({'ok': 0, 'msg': '请填写正确的用户ID和积分数量'})
-    
-    try:
-        conn = sqlite3.connect('database.db')
-        c = conn.cursor()
-        
-        # 检查用户是否存在
-        c.execute('SELECT id FROM users WHERE id = ?', (target_uid,))
-        if not c.fetchone():
-            conn.close()
-            return jsonify({'ok': 0, 'msg': '用户不存在'})
-        
-        # 初始化用户积分（如果不存在）
-        c.execute('INSERT OR IGNORE INTO user_points (uid, points, total_earned, total_spent) VALUES (?, 0, 0, 0)', (target_uid,))
-        
-        # 添加积分
-        c.execute('UPDATE user_points SET points = points + ?, total_earned = total_earned + ? WHERE uid = ?',
-                  (points, points, target_uid))
-        
-        # 记录交易
-        c.execute('''INSERT INTO point_transactions (uid, type, points, description)
-                      VALUES (?, 'earn', ?, ?)''', (target_uid, points, description))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': 1, 'msg': f'成功为用户添加 {points} 积分'})
-    except Exception as e:
-        return jsonify({'ok': 0, 'msg': f'添加积分失败: {str(e)}'})
-
-# 获取兑换记录（管理后台）
-@app.route('/admin/rewards/claims', methods=['POST'])
-def admin_get_claims():
-    uid = session.get('user')
-    if not uid:
-        return jsonify({'ok': 0, 'msg': '请先登录'})
-    
-    role = get_user_role(uid)
-    if role < ROLE_ADMIN:
-        return jsonify({'ok': 0, 'msg': '权限不足'})
-    
-    try:
-        conn = sqlite3.connect('database.db')
-        c = conn.cursor()
-        
-        c.execute('''SELECT rc.id, rc.uid, u.nickname, r.title, rc.points_spent, rc.status, rc.claim_data, rc.created_at
-                      FROM reward_claims rc
-                      JOIN users u ON rc.uid = u.id
-                      JOIN rewards r ON rc.reward_id = r.id
-                      ORDER BY rc.created_at DESC''')
-        
-        claims = []
-        for row in c.fetchall():
-            claims.append({
-                'id': row[0],
-                'uid': row[1],
-                'nickname': row[2],
-                'reward_title': row[3],
-                'points_spent': row[4],
-                'status': row[5],
-                'claim_data': row[6],
-                'created_at': row[7]
-            })
-        
-        conn.close()
-        
-        return jsonify({'ok': 1, 'data': claims})
-    except Exception as e:
-        return jsonify({'ok': 0, 'msg': f'获取兑换记录失败: {str(e)}'})
-
-# 处理兑换（发放奖励）
-@app.route('/admin/rewards/handle_claim', methods=['POST'])
-def admin_handle_claim():
-    uid = session.get('user')
-    if not uid:
-        return jsonify({'ok': 0, 'msg': '请先登录'})
-    
-    role = get_user_role(uid)
-    if role < ROLE_ADMIN:
-        return jsonify({'ok': 0, 'msg': '权限不足'})
-    
-    data = request.get_json()
-    claim_id = data.get('id')
-    status = data.get('status', 1)
-    claim_data = data.get('claim_data', '')
-    
-    try:
-        conn = sqlite3.connect('database.db')
-        c = conn.cursor()
-        
-        c.execute('UPDATE reward_claims SET status = ?, claim_data = ? WHERE id = ?',
-                  (status, claim_data, claim_id))
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': 1, 'msg': '处理成功'})
-    except Exception as e:
-        return jsonify({'ok': 0, 'msg': f'处理失败: {str(e)}'})
+    return response
 
 # ==================== 全局错误收集器 ====================
 @app.after_request
@@ -9888,6 +9385,294 @@ def error_429(e):
     if request.path.startswith('/') and (request.is_json or (request.content_type and 'application/json' in request.content_type)):
         return jsonify({'ok': 0, 'msg': str(e)}), 429
     return render_template('error.html', code=429, message=str(e), site_title=get_site_title()), 429
+
+# ==================== 公告系统 API ====================
+@app.route('/api/announcements', methods=['GET'])
+def get_announcements():
+    uid = session.get('user')
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        c.execute("SELECT id, title, content, image_url, type, priority, created_at FROM announcements WHERE enabled = 1 ORDER BY priority DESC, created_at DESC")
+        announcements = []
+        for row in c.fetchall():
+            c2 = conn.cursor()
+            c2.execute("SELECT 1 FROM announcement_read WHERE uid = ? AND announcement_id = ?", (uid or '', row[0]))
+            is_read = c2.fetchone() is not None
+            announcements.append({
+                'id': row[0],
+                'title': row[1],
+                'content': row[2],
+                'image_url': row[3],
+                'type': row[4],
+                'priority': row[5],
+                'created_at': row[6],
+                'is_read': is_read
+            })
+        conn.close()
+        return jsonify({'ok': 1, 'announcements': announcements})
+    except Exception as e:
+        logger.error(f"获取公告失败: {e}")
+        return jsonify({'ok': 0, 'msg': '获取公告失败'})
+
+@app.route('/api/announcements/unread', methods=['GET'])
+def get_unread_announcements():
+    uid = session.get('user')
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        c.execute("""
+            SELECT a.id, a.title, a.content, a.image_url, a.type, a.priority, a.created_at 
+            FROM announcements a 
+            LEFT JOIN announcement_read ar ON a.id = ar.announcement_id AND ar.uid = ?
+            WHERE a.enabled = 1 AND ar.uid IS NULL
+            ORDER BY a.priority DESC, a.created_at DESC
+        """, (uid or '',))
+        announcements = []
+        for row in c.fetchall():
+            announcements.append({
+                'id': row[0],
+                'title': row[1],
+                'content': row[2],
+                'image_url': row[3],
+                'type': row[4],
+                'priority': row[5],
+                'created_at': row[6],
+                'is_read': False
+            })
+        conn.close()
+        return jsonify({'ok': 1, 'announcements': announcements})
+    except Exception as e:
+        logger.error(f"获取未读公告失败: {e}")
+        return jsonify({'ok': 0, 'msg': '获取公告失败'})
+
+@app.route('/api/announcements/read', methods=['POST'])
+def mark_announcement_read():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    data = request.get_json()
+    announcement_id = data.get('id')
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO announcement_read (uid, announcement_id) VALUES (?, ?)", (uid, announcement_id))
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': 1})
+    except Exception as e:
+        logger.error(f"标记公告已读失败: {e}")
+        return jsonify({'ok': 0, 'msg': '操作失败'})
+
+@app.route('/api/announcements/read/all', methods=['POST'])
+def mark_all_announcements_read():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        c.execute("SELECT id FROM announcements WHERE enabled = 1")
+        for row in c.fetchall():
+            c2 = conn.cursor()
+            c2.execute("INSERT OR IGNORE INTO announcement_read (uid, announcement_id) VALUES (?, ?)", (uid, row[0]))
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': 1})
+    except Exception as e:
+        logger.error(f"标记全部公告已读失败: {e}")
+        return jsonify({'ok': 0, 'msg': '操作失败'})
+
+# ==================== 管理员公告管理 API ====================
+@app.route('/api/admin/announcements', methods=['GET', 'POST'])
+def admin_announcements():
+    current_user = session.get('user')
+    if not current_user:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    current_role = get_user_role(current_user)
+    if current_role < ROLE_ADMIN:
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    if request.method == 'GET':
+        try:
+            conn = sqlite3.connect('database.db')
+            c = conn.cursor()
+            c.execute("SELECT id, title, content, image_url, type, priority, enabled, created_at, updated_at FROM announcements ORDER BY priority DESC, created_at DESC")
+            announcements = []
+            for row in c.fetchall():
+                announcements.append({
+                    'id': row[0],
+                    'title': row[1],
+                    'content': row[2],
+                    'image_url': row[3],
+                    'type': row[4],
+                    'priority': row[5],
+                    'enabled': row[6],
+                    'created_at': row[7],
+                    'updated_at': row[8]
+                })
+            conn.close()
+            return jsonify({'ok': 1, 'announcements': announcements})
+        except Exception as e:
+            logger.error(f"获取公告列表失败: {e}")
+            return jsonify({'ok': 0, 'msg': '获取失败'})
+    
+    elif request.method == 'POST':
+        data = request.get_json()
+        title = data.get('title')
+        content = data.get('content')
+        image_url = data.get('image_url', '')
+        type_ = data.get('type', 'notice')
+        priority = data.get('priority', 0)
+        
+        if not title or not content:
+            return jsonify({'ok': 0, 'msg': '标题和内容不能为空'})
+        
+        try:
+            conn = sqlite3.connect('database.db')
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO announcements (title, content, image_url, type, priority, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (title, content, image_url, type_, priority))
+            conn.commit()
+            conn.close()
+            return jsonify({'ok': 1, 'msg': '公告发布成功'})
+        except Exception as e:
+            logger.error(f"发布公告失败: {e}")
+            return jsonify({'ok': 0, 'msg': '发布失败'})
+
+@app.route('/api/admin/announcements/<int:aid>', methods=['PUT', 'DELETE'])
+def admin_announcement_detail(aid):
+    current_user = session.get('user')
+    if not current_user:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    current_role = get_user_role(current_user)
+    if current_role < ROLE_ADMIN:
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    if request.method == 'PUT':
+        data = request.get_json()
+        title = data.get('title')
+        content = data.get('content')
+        image_url = data.get('image_url')
+        type_ = data.get('type')
+        priority = data.get('priority')
+        enabled = data.get('enabled')
+        
+        try:
+            conn = sqlite3.connect('database.db')
+            c = conn.cursor()
+            updates = []
+            params = []
+            
+            if title is not None:
+                updates.append("title = ?")
+                params.append(title)
+            if content is not None:
+                updates.append("content = ?")
+                params.append(content)
+            if image_url is not None:
+                updates.append("image_url = ?")
+                params.append(image_url)
+            if type_ is not None:
+                updates.append("type = ?")
+                params.append(type_)
+            if priority is not None:
+                updates.append("priority = ?")
+                params.append(priority)
+            if enabled is not None:
+                updates.append("enabled = ?")
+                params.append(enabled)
+            
+            updates.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(aid)
+            
+            if updates:
+                c.execute("UPDATE announcements SET " + ", ".join(updates) + " WHERE id = ?", params)
+                conn.commit()
+            
+            conn.close()
+            return jsonify({'ok': 1, 'msg': '修改成功'})
+        except Exception as e:
+            logger.error(f"修改公告失败: {e}")
+            return jsonify({'ok': 0, 'msg': '修改失败'})
+    
+    elif request.method == 'DELETE':
+        try:
+            conn = sqlite3.connect('database.db')
+            c = conn.cursor()
+            c.execute("DELETE FROM announcements WHERE id = ?", (aid,))
+            c.execute("DELETE FROM announcement_read WHERE announcement_id = ?", (aid,))
+            conn.commit()
+            conn.close()
+            return jsonify({'ok': 1, 'msg': '删除成功'})
+        except Exception as e:
+            logger.error(f"删除公告失败: {e}")
+            return jsonify({'ok': 0, 'msg': '删除失败'})
+
+# ==================== 站内邮件 API ====================
+@app.route('/api/inbox', methods=['GET'])
+def get_inbox():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        c.execute("SELECT id, title, content, read, created_at FROM notifications WHERE uid = ? ORDER BY created_at DESC", (uid,))
+        inbox = []
+        for row in c.fetchall():
+            inbox.append({
+                'id': row[0],
+                'title': row[1],
+                'content': row[2],
+                'read': bool(row[3]),
+                'created_at': row[4]
+            })
+        conn.close()
+        return jsonify({'ok': 1, 'inbox': inbox})
+    except Exception as e:
+        logger.error(f"获取邮件失败: {e}")
+        return jsonify({'ok': 0, 'msg': '获取失败'})
+
+@app.route('/api/inbox/unread_count', methods=['GET'])
+def get_inbox_unread_count():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM notifications WHERE uid = ? AND read = 0", (uid,))
+        count = c.fetchone()[0]
+        conn.close()
+        return jsonify({'ok': 1, 'count': count})
+    except Exception as e:
+        logger.error(f"获取未读邮件数失败: {e}")
+        return jsonify({'ok': 0, 'msg': '获取失败'})
+
+@app.route('/api/inbox/read_all', methods=['POST'])
+def mark_all_inbox_read():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        c.execute("UPDATE notifications SET read = 1 WHERE uid = ? AND read = 0", (uid,))
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': 1})
+    except Exception as e:
+        logger.error(f"标记邮件已读失败: {e}")
+        return jsonify({'ok': 0, 'msg': '操作失败'})
 
 if __name__ == '__main__':
     # 恢复已有预约的提醒任务

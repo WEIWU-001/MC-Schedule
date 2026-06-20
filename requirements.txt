@@ -3,7 +3,6 @@ flask-mail
 flask-wtf
 flask-cors
 apscheduler
-tencentcloud-sdk-python
 pandas
 matplotlib
 gunicorn

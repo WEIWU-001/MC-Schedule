@@ -6,21 +6,28 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="">
 <link rel="stylesheet" href="/static/css/style.css">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
-<!-- 背景图片层 -->
-<div id="bg-image-layer"></div>
+<!-- 背景图片层（已隐藏，功能开发中） -->
+<div id="bg-image-layer" style="display:none;"></div>
 <!-- 浮动粒子背景 -->
 <div class="floating-particles" id="particles"></div>
 <!-- 顶部导航 -->
 <div class="navbar">
     <div class="logo" id="siteTitle">MC整合包档期排期站</div>
-    <div class="nav-right" id="navBox">
+    <div class="nav-right">
+        <button class="nav-icon-btn" id="announcementBtn" title="公告">
+            🔔
+            <span id="announcementBadge" class="nav-badge" style="display:none;">0</span>
+        </button>
+        <button class="nav-icon-btn" id="inboxBtn" title="站内邮件">
+            📧
+            <span id="inboxBadge" class="nav-badge" style="display:none;">0</span>
+        </button>
+        <div id="navBox"></div>
     </div>
 </div>
-
-<!-- 公告栏 -->
-<div class="banner" id="siteAnnouncement">公告：加载中...</div>
 
 <!-- 主内容区 -->
 <div class="container">
@@ -80,13 +87,12 @@
             </select>
             <button class="add-schedule-btn" id="addBtn" style="display:none" onclick="openAddModal()">新增档期</button>
             <button class="add-schedule-btn" id="applyOpBtn" style="display:none; background:#9B59B6;" onclick="openApplyOpModal()">成为档主</button>
-            <button class="admin-btn" id="adminBtn" style="display:none" onclick="window.open('/admin','_self')">管理后台</button>
             <button class="feedback-btn" id="feedbackBtn" onclick="openFeedbackModal()" style="background:#F39C12;color:#fff;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:5px;">💡 反馈</button>
             
             <div class="view-switcher">
                 <button class="view-btn active" id="calendarViewBtn" onclick="switchView('calendar')">📅 月历</button>
                 <button class="view-btn" id="timelineViewBtn" onclick="switchView('timeline')">📊 时间线</button>
-                <button class="view-btn" id="cardViewBtn" onclick="switchView('card')">🃏 卡片</button>
+                <button class="view-btn" id="cardViewBtn" onclick="switchView('card')">🖥️ 监控</button>
             </div>
         </div>
         
@@ -114,24 +120,11 @@
             <div id="timelineBody"></div>
         </div>
         
-        <!-- 卡片视图 -->
+        <!-- 监控视图 -->
         <div id="cardView" class="view-container" style="display:none;">
             <div id="cardBody"></div>
         </div>
         
-        <!-- 主评论区 -->
-        <div class="forum-section" id="mainForum">
-            <div class="forum-header">
-                <div class="forum-title">📢 主评论区</div>
-            </div>
-            <div class="forum-input-group">
-                <textarea id="mainForumComment" placeholder="说点什么..."></textarea>
-            </div>
-            <button class="forum-btn" id="mainForumBtn" onclick="createMainForumComment()">发表评论</button>
-            <div id="mainForumComments" style="margin-top: 15px">
-                <div class="empty-tip">加载中...</div>
-            </div>
-        </div>
     </div>
     
     <!-- 右侧侧边栏（本月档期、我的预约、档期详情） -->
@@ -145,9 +138,26 @@
             <div id="myReservations" class="empty-tip">暂无预约</div>
         </div>
         
-        <!-- 档期详细信息 -->
+        <!-- 档期详细信息（页面内显示，点击后变成弹窗） -->
         <div class="card" id="detailCard">
-            <h3>📋 档期详情</h3>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;">
+                <h3>📋 档期详情</h3>
+                <div style="display:flex;gap:8px;">
+                    <button class="detail-action-btn" onclick="openScheduleDetailModal()" title="弹出窗口">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                            <polyline points="15 3 21 3 21 9"/>
+                            <line x1="10" y1="14" x2="21" y2="3"/>
+                        </svg>
+                    </button>
+                    <button class="detail-action-btn" onclick="closeDetailCard()" title="关闭">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18"/>
+                            <line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
             <div id="scheduleDetail" class="empty-tip">点击左侧日历中的档期查看详情</div>
         </div>
     </div>
@@ -155,7 +165,29 @@
 
 <!-- 页脚 -->
 <div class="footer" id="siteFooter">
-    <div class="footer-text">© 2026 MC整合包档期排期站 | 仅供学习交流使用</div>
+    <div class="footer-content">
+        <div class="footer-text">© 2026 MC整合包档期排期站 | 仅供学习交流使用</div>
+        <div class="footer-run-time" id="footerRunTime">
+            <span class="run-time-label">运行时间</span>
+            <span class="run-time-value">计算中...</span>
+        </div>
+    </div>
+</div>
+
+<!-- 档期详情弹窗（支持拖拽） -->
+<div class="draggable-modal-overlay" id="scheduleDetailModal" style="display:none;">
+    <div class="draggable-modal" id="scheduleDetailModalContent">
+        <div class="draggable-modal-header" id="scheduleDetailModalHeader">
+            <div class="draggable-modal-title">
+                <span class="draggable-icon">📋</span>
+                <span id="scheduleDetailModalTitle">档期详情</span>
+            </div>
+            <button class="draggable-modal-close" onclick="closeScheduleDetailModal()">✕</button>
+        </div>
+        <div class="draggable-modal-body" id="scheduleDetailModalBody">
+            <div class="empty-tip">加载中...</div>
+        </div>
+    </div>
 </div>
 
 <!-- 网站维护模式弹窗 -->
@@ -510,8 +542,7 @@
                 <p>1. 禁止发布虚假、欺诈性质的档期信息<br>
                 2. 禁止冒用他人服务器信息<br>
                 3. 禁止发布违法游戏内容<br>
-                4. 禁止在评论区发表<strong style="color:#E74C3C">脏话、粗话</strong>等不文明言论<br>
-                5. 禁止骚扰或攻击其他用户</p>
+                4. 禁止骚扰或攻击其他用户</p>
                 
                 <p style="margin:10px 0;"><strong style="color:#9B59B6">六、违规处理</strong></p>
                 <p>1. 违反规定将根据情节受到以下处罚：<br>
@@ -555,6 +586,21 @@
         <div class="form-item">
             <label>联系方式（选填）</label>
             <input type="text" id="applyContact" placeholder="QQ号、邮箱等，方便管理员联系">
+        </div>
+        
+        <div class="form-item">
+            <label>默认联系方式类型<span style="color:#e74c3c">*</span></label>
+            <select id="applyDefaultContactType">
+                <option value="">请选择类型</option>
+                <option value="qq">QQ</option>
+                <option value="phone">电话</option>
+                <option value="wechat">微信</option>
+                <option value="other">其他</option>
+            </select>
+        </div>
+        <div class="form-item">
+            <label>默认联系方式内容<span style="color:#e74c3c">*</span></label>
+            <input type="text" id="applyDefaultContactValue" placeholder="成为档主后，新增档期的默认联系方式">
         </div>
         
         <button class="form-btn" onclick="submitApplyOp()">提交申请</button>
@@ -646,7 +692,8 @@
         <h3>🎨 界面设置</h3>
         <div class="msg" id="bgSettingsMsg"></div>
         <div style="background:#1a1a2e;border-radius:8px;padding:15px;margin:15px 0;">
-            <div style="margin-bottom:18px;">
+            <!-- 背景图片设置（已隐藏，功能开发中） -->
+            <div style="display:none;">
                 <div style="color:#4fc3f7;font-size:13px;margin-bottom:8px;">🖼️ 背景图片</div>
                 <input type="text" id="bgUrlInput" placeholder="粘贴图片URL地址" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d1a;color:#fff;font-size:13px;box-sizing:border-box;">
                 <div id="bgPreview" style="max-height:120px;display:none;overflow:hidden;border-radius:6px;border:1px solid #333;margin:10px 0;">
@@ -658,7 +705,8 @@
                     <button onclick="clearLocalBg()" style="flex:1;padding:6px;font-size:12px;border-radius:6px;border:none;background:#666;color:#fff;cursor:pointer;">恢复默认</button>
                 </div>
             </div>
-            <div style="border-top:1px solid #333;padding-top:15px;margin-bottom:18px;">
+            <!-- 推荐图库（已隐藏，功能开发中） -->
+            <div style="display:none;">
                 <div style="color:#4fc3f7;font-size:13px;margin-bottom:8px;">📚 推荐图库</div>
                 <div style="display:flex;flex-wrap:wrap;gap:6px;">
                     <a href="https://wallhaven.cc/search?q=anime&categories=010&purity=100" target="_blank" style="padding:4px 10px;background:#1a1a2e;border-radius:4px;color:#4fc3f7;font-size:12px;text-decoration:none;border:1px solid #333;">🌸 Wallhaven</a>
@@ -745,6 +793,53 @@
             <input type="text" id="editServerIp" placeholder="例如：mc.xxx.com 或 192.168.1.1">
         </div>
         <button class="form-btn" onclick="submitEditSchedule()">确认修改</button>
+    </div>
+</div>
+
+<!-- 公告弹窗 -->
+<div class="modal-overlay" id="announcementModal" style="display:none;">
+    <div class="modal-container announcement-modal-wide" id="announcementModalContent">
+        <div class="modal-header">
+            <h3>📢 公告与活动</h3>
+            <button class="modal-close" onclick="closeAnnouncementModal()">✕</button>
+        </div>
+        <div class="announcement-layout">
+            <!-- 左侧：分类和列表 -->
+            <div class="announcement-sidebar">
+                <div class="announcement-tabs">
+                    <button class="announcement-tab active" data-type="all" onclick="switchAnnouncementTab('all')">全部</button>
+                    <button class="announcement-tab" data-type="notice" onclick="switchAnnouncementTab('notice')">公告</button>
+                    <button class="announcement-tab" data-type="activity" onclick="switchAnnouncementTab('activity')">活动</button>
+                    <button class="announcement-tab" data-type="important" onclick="switchAnnouncementTab('important')">重要</button>
+                </div>
+                <div class="announcement-list-container" id="announcementListContainer">
+                    <div class="loading-tip">加载中...</div>
+                </div>
+            </div>
+            <!-- 右侧：详细信息 -->
+            <div class="announcement-detail" id="announcementDetail">
+                <div class="announcement-detail-empty">
+                    <div class="empty-icon">📋</div>
+                    <div class="empty-text">请从左侧选择一条公告查看详情</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 站内邮件弹窗 -->
+<div class="modal-overlay" id="inboxModal" style="display:none;">
+    <div class="modal-container" id="inboxModalContent">
+        <div class="modal-header">
+            <h3>📧 站内邮件</h3>
+            <button class="modal-close" onclick="closeInboxModal()">✕</button>
+        </div>
+        <div class="modal-body" id="inboxList">
+            <div class="loading-tip">加载中...</div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="markAllInboxRead()">全部标为已读</button>
+        </div>
     </div>
 </div>
 

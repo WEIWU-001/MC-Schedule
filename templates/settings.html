@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>个人设置 - MC整合包档期排期站</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        :root {
+            --bg-primary: #1A1A22;
+            --bg-secondary: #1E1E2C;
+            --bg-card: #262633;
+            --bg-tertiary: #38384A;
+            --text-primary: #D8D8E6;
+            --text-secondary: #888;
+            --accent: #42C9D8;
+            --border: #333;
+            --success: #2ECC71;
+            --danger: #e74c3c;
+            --warning: #f39c12;
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: "Microsoft YaHei", sans-serif; }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+        
+        /* 顶部导航 */
+        .header {
+            padding: 15px 30px;
+            background: var(--bg-card);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+        }
+        .header-title { font-size: 20px; color: var(--accent); display: flex; align-items: center; gap: 10px; }
+        .back-btn {
+            background: var(--accent);
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            color: #fff;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .back-btn:hover { opacity: 0.9; transform: translateY(-1px); }
+        
+        /* 主内容区 */
+        .main-container {
+            max-width: 900px;
+            margin: 30px auto;
+            padding: 0 20px;
+            display: flex;
+            gap: 25px;
+        }
+        
+        /* 左侧菜单 */
+        .menu-sidebar {
+            width: 220px;
+            flex-shrink: 0;
+        }
+        .menu-card {
+            background: var(--bg-card);
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+            position: sticky;
+            top: 20px;
+        }
+        .menu-title {
+            padding: 15px 18px;
+            font-size: 14px;
+            color: var(--text-secondary);
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border);
+        }
+        .menu-item {
+            padding: 14px 18px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transition: all 0.2s;
+            border-bottom: 1px solid var(--border);
+            font-size: 14px;
+        }
+        .menu-item:last-child { border-bottom: none; }
+        .menu-item:hover { background: var(--bg-tertiary); }
+        .menu-item.active {
+            background: var(--bg-tertiary);
+            border-left: 3px solid var(--accent);
+            padding-left: 15px;
+        }
+        .menu-item .icon { font-size: 18px; width: 24px; text-align: center; }
+        
+        /* 右侧内容 */
+        .content-area {
+            flex: 1;
+            min-width: 0;
+        }
+        
+        /* 内容卡片 */
+        .content-card {
+            background: var(--bg-card);
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            margin-bottom: 20px;
+        }
+        .card-header {
+            padding: 18px 22px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .card-header h3 {
+            font-size: 16px;
+            color: var(--accent);
+        }
+        .card-body {
+            padding: 22px;
+        }
+        
+        /* 表单样式 */
+        .form-row {
+            display: flex;
+            align-items: flex-start;
+            margin-bottom: 20px;
+        }
+        .form-label {
+            width: 120px;
+            padding-top: 10px;
+            font-size: 14px;
+            color: var(--text-secondary);
+            flex-shrink: 0;
+        }
+        .form-control {
+            flex: 1;
+        }
+        .form-input {
+            width: 100%;
+            padding: 10px 14px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .form-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(66, 201, 216, 0.1);
+        }
+        .form-input:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .form-hint {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 6px;
+        }
+        .form-error {
+            font-size: 12px;
+            color: var(--danger);
+            margin-top: 6px;
+            display: none;
+        }
+        .form-error.show { display: block; }
+        
+        /* 头像上传 */
+        .avatar-upload-area {
+            display: flex;
+            align-items: center;
+            gap: 25px;
+        }
+        .avatar-preview-large {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            background: var(--bg-tertiary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 40px;
+            border: 3px solid var(--accent);
+            overflow: hidden;
+            flex-shrink: 0;
+            position: relative;
+        }
+        .avatar-preview-large img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .avatar-upload-btn {
+            background: var(--bg-tertiary);
+            border: 1px dashed var(--border);
+            padding: 10px 20px;
+            border-radius: 6px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .avatar-upload-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+        .avatar-info {
+            flex: 1;
+        }
+        .avatar-info p {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+        
+        /* 用户信息展示 */
+        .user-info-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+        }
+        .info-item {
+            background: var(--bg-tertiary);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+        .info-item .label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 5px;
+        }
+        .info-item .value {
+            font-size: 15px;
+            color: var(--accent);
+            font-weight: 500;
+        }
+        
+        /* 按钮样式 */
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent), #36a9b8);
+            border: none;
+            padding: 10px 24px;
+            border-radius: 6px;
+            color: #fff;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(66, 201, 216, 0.3);
+        }
+        .btn-secondary {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            padding: 10px 24px;
+            border-radius: 6px;
+            color: var(--text-primary);
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .btn-secondary:hover {
+            background: var(--bg-hover);
+        }
+        .btn-danger {
+            background: var(--danger);
+            border: none;
+            padding: 10px 24px;
+            border-radius: 6px;
+            color: #fff;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .btn-danger:hover {
+            opacity: 0.9;
+        }
+        
+        .form-actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 25px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border);
+        }
+        
+        /* 消息提示 */
+        .msg-success {
+            color: var(--success);
+            font-size: 13px;
+            margin-top: 10px;
+            display: none;
+            align-items: center;
+            gap: 5px;
+        }
+        .msg-success.show { display: flex; }
+        .msg-error {
+            color: var(--danger);
+            font-size: 13px;
+            margin-top: 10px;
+            display: none;
+            align-items: center;
+            gap: 5px;
+        }
+        .msg-error.show { display: flex; }
+        
+        /* 内容区域显示/隐藏 */
+        .section-content { display: none; }
+        .section-content.active { display: block; }
+        
+        @media (max-width: 768px) {
+            .main-container { flex-direction: column; }
+            .menu-sidebar { width: 100%; }
+            .menu-card { position: static; }
+            .user-info-grid { grid-template-columns: 1fr; }
+            .form-row { flex-direction: column; }
+            .form-label { width: 100%; padding-top: 0; margin-bottom: 8px; }
+        }
+    </style>
+</head>
+<body>
+<!-- 顶部导航 -->
+<div class="header">
+    <div class="header-title">
+        <span>⚙️</span>
+        个人设置
+    </div>
+    <a href="/" class="back-btn">← 返回主页</a>
+</div>
+
+<!-- 主内容 -->
+<div class="main-container">
+    <!-- 左侧菜单 -->
+    <div class="menu-sidebar">
+        <div class="menu-card">
+            <div class="menu-title">设置分类</div>
+            <div class="menu-item active" onclick="switchSection('profile', this)">
+                <span class="icon">👤</span>
+                基本资料
+            </div>
+            <div class="menu-item" onclick="switchSection('security', this)">
+                <span class="icon">🔐</span>
+                账户安全
+            </div>
+            <div class="menu-item" onclick="switchSection('avatar', this)">
+                <span class="icon">🖼️</span>
+                头像设置
+            </div>
+        </div>
+    </div>
+    
+    <!-- 右侧内容 -->
+    <div class="content-area">
+        <!-- 基本资料 -->
+        <div class="section-content active" id="section-profile">
+            <div class="content-card">
+                <div class="card-header">
+                    <h3>👤 基本资料</h3>
+                </div>
+                <div class="card-body">
+                    <div class="user-info-grid">
+                        <div class="info-item">
+                            <div class="label">用户ID</div>
+                            <div class="value" id="infoUid">-</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="label">用户角色</div>
+                            <div class="value" id="infoRole">-</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="label">注册时间</div>
+                            <div class="value" id="infoRegTime">-</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="label">绑定邮箱</div>
+                            <div class="value" id="infoEmail">-</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="content-card">
+                <div class="card-header">
+                    <h3>✏️ 修改资料</h3>
+                </div>
+                <div class="card-body">
+                    <div class="form-row">
+                        <div class="form-label">昵称</div>
+                        <div class="form-control">
+                            <input type="text" class="form-input" id="inputNickname" placeholder="请输入昵称" maxlength="20">
+                            <div class="form-hint">2-20个字符，支持中文、英文、数字</div>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-label">默认联系方式类型</div>
+                        <div class="form-control">
+                            <select class="form-input" id="inputDefaultContactType">
+                                <option value="">请选择类型</option>
+                                <option value="qq">QQ</option>
+                                <option value="phone">电话</option>
+                                <option value="wechat">微信</option>
+                                <option value="other">其他</option>
+                            </select>
+                            <div class="form-hint">成为档主后，新增档期的默认联系方式</div>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-label">默认联系方式</div>
+                        <div class="form-control">
+                            <input type="text" class="form-input" id="inputDefaultContactValue" placeholder="请输入默认联系方式">
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn-primary" onclick="saveProfile()">💾 保存修改</button>
+                    </div>
+                    <div class="msg-success" id="profileMsgSuccess">✓ 保存成功</div>
+                    <div class="msg-error" id="profileMsgError">✖ 保存失败</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 账户安全 -->
+        <div class="section-content" id="section-security">
+            <div class="content-card">
+                <div class="card-header">
+                    <h3>🔑 修改密码</h3>
+                </div>
+                <div class="card-body">
+                    <div class="form-row">
+                        <div class="form-label">当前密码</div>
+                        <div class="form-control">
+                            <input type="password" class="form-input" id="inputCurrentPwd" placeholder="请输入当前密码">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-label">新密码</div>
+                        <div class="form-control">
+                            <input type="password" class="form-input" id="inputNewPwd" placeholder="请输入新密码" minlength="6">
+                            <div class="form-hint">至少6个字符</div>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-label">确认密码</div>
+                        <div class="form-control">
+                            <input type="password" class="form-input" id="inputConfirmPwd" placeholder="请再次输入新密码">
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn-primary" onclick="changePassword()">🔑 修改密码</button>
+                    </div>
+                    <div class="msg-success" id="pwdMsgSuccess">✓ 密码修改成功</div>
+                    <div class="msg-error" id="pwdMsgError">✖ 修改失败</div>
+                </div>
+            </div>
+            
+            <div class="content-card">
+                <div class="card-header">
+                    <h3>📧 邮箱设置</h3>
+                </div>
+                <div class="card-body">
+                    <div class="form-row">
+                        <div class="form-label">当前邮箱</div>
+                        <div class="form-control">
+                            <input type="email" class="form-input" id="inputEmail" placeholder="暂未绑定邮箱" disabled>
+                            <div class="form-hint" id="emailHint">绑定邮箱后可使用邮箱登录和找回密码</div>
+                        </div>
+                    </div>
+                    <div class="form-row" id="newEmailRow" style="display:none;">
+                        <div class="form-label">新邮箱</div>
+                        <div class="form-control">
+                            <input type="email" class="form-input" id="inputNewEmail" placeholder="请输入新邮箱地址">
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn-primary" id="bindEmailBtn" onclick="bindEmail()">📧 绑定邮箱</button>
+                        <button class="btn-secondary" id="cancelEmailBtn" onclick="cancelEmail()" style="display:none;">取消</button>
+                    </div>
+                    <div class="msg-success" id="emailMsgSuccess">✓ 邮箱绑定成功</div>
+                    <div class="msg-error" id="emailMsgError">✖ 绑定失败</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 头像设置 -->
+        <div class="section-content" id="section-avatar">
+            <div class="content-card">
+                <div class="card-header">
+                    <h3>🖼️ 头像设置</h3>
+                </div>
+                <div class="card-body">
+                    <div class="avatar-upload-area">
+                        <div class="avatar-preview-large" id="avatarPreview">?</div>
+                        <div class="avatar-info">
+                            <p>当前头像预览</p>
+                            <p>支持 JPG、PNG、GIF 格式，建议尺寸 200x200 像素</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="content-card">
+                <div class="card-header">
+                    <h3>🔗 设置头像链接</h3>
+                </div>
+                <div class="card-body">
+                    <div class="form-row">
+                        <div class="form-label">头像URL</div>
+                        <div class="form-control">
+                            <input type="text" class="form-input" id="inputAvatarUrl" placeholder="请输入头像图片链接" oninput="previewAvatar()">
+                            <div class="form-hint">支持图片直链，建议使用图床或稳定的图片链接</div>
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn-primary" onclick="saveAvatar()">💾 保存头像</button>
+                        <button class="btn-secondary" onclick="clearAvatar()">🗑️ 清除头像</button>
+                    </div>
+                    <div class="msg-success" id="avatarMsgSuccess">✓ 头像保存成功</div>
+                    <div class="msg-error" id="avatarMsgError">✖ 保存失败</div>
+                </div>
+            </div>
+            
+            <div class="content-card">
+                <div class="card-header">
+                    <h3>💡 推荐图床</h3>
+                </div>
+                <div class="card-body">
+                    <p style="color:var(--text-secondary);font-size:14px;line-height:1.8;">
+                        推荐使用以下图床服务上传图片：<br>
+                        • <span style="color:var(--accent);">sm.ms</span> - 免费图床，支持外链<br>
+                        • <span style="color:var(--accent);">imgur.com</span> - 国外免费图床<br>
+                        • <span style="color:var(--accent);">lolimgtaccu.dog</span> - 游戏向图床<br>
+                        <br>
+                        上传图片后，复制图片地址填入上方输入框即可设置头像。
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// CSRF Token
+function getCsrfToken() {
+    const match = document.cookie.match(/csrf_token=([^;]+)/);
+    return match ? match[1] : '';
+}
+
+// 全局 fetch
+const originalFetch = window.fetch;
+window.fetch = function(url, options = {}) {
+    if (options.method && ['POST', 'PUT', 'DELETE'].includes(options.method.toUpperCase())) {
+        options.headers = options.headers || {};
+        options.headers['X-CSRFToken'] = getCsrfToken();
+    }
+    return originalFetch(url, options);
+};
+
+// 切换菜单
+function switchSection(section, el) {
+    document.querySelectorAll('.menu-item').forEach(item => item.classList.remove('active'));
+    document.querySelectorAll('.section-content').forEach(content => content.classList.remove('active'));
+    
+    el.classList.add('active');
+    document.getElementById('section-' + section).classList.add('active');
+}
+
+// 检查登录
+async function checkLogin() {
+    try {
+        const res = await fetch('/user/info', {method: 'POST'});
+        const data = await res.json();
+        if (!data.ok || !data.uid) {
+            window.location.href = '/';
+            return false;
+        }
+        return true;
+    } catch (e) {
+        window.location.href = '/';
+        return false;
+    }
+}
+
+// 加载用户信息
+async function loadUserInfo() {
+    try {
+        const res = await fetch('/user/info', {method: 'POST'});
+        const data = await res.json();
+        
+        if (data.ok === 1) {
+            document.getElementById('infoUid').innerText = data.uid;
+            document.getElementById('infoRegTime').innerText = data.reg_time || '-';
+            document.getElementById('infoEmail').innerText = data.email || '未绑定';
+            document.getElementById('inputNickname').value = data.nickname || '';
+            document.getElementById('inputEmail').value = data.email || '';
+            document.getElementById('inputAvatarUrl').value = data.avatar || '';
+            document.getElementById('inputDefaultContactType').value = data.default_contact_type || '';
+            document.getElementById('inputDefaultContactValue').value = data.default_contact_value || '';
+            
+            const roleMap = {
+                'super_admin': '👑 最高管理员',
+                'admin': '🔧 管理员',
+                'trusted_op': '⭐ 信用档主',
+                'op': '🎮 档主',
+                'member': '👤 普通成员'
+            };
+            document.getElementById('infoRole').innerText = roleMap[data.role] || '👤 普通成员';
+            
+            // 更新邮箱按钮状态
+            const emailBtn = document.getElementById('bindEmailBtn');
+            const emailHint = document.getElementById('emailHint');
+            if (data.email) {
+                emailBtn.innerText = '✏️ 修改邮箱';
+                emailHint.innerText = '已绑定邮箱，可修改';
+            } else {
+                emailBtn.innerText = '📧 绑定邮箱';
+                emailHint.innerText = '绑定邮箱后可使用邮箱登录和找回密码';
+            }
+            
+            // 头像预览
+            previewAvatar();
+        }
+    } catch (e) {
+        console.error('加载用户信息失败:', e);
+    }
+}
+
+// 头像预览
+function previewAvatar() {
+    const url = document.getElementById('inputAvatarUrl').value.trim();
+    const preview = document.getElementById('avatarPreview');
+    
+    if (url) {
+        preview.innerHTML = `<img src="${url}" onerror="this.parentElement.innerText='?'">`;
+    } else {
+        preview.innerText = '?';
+    }
+}
+
+// 保存资料
+async function saveProfile() {
+    const nickname = document.getElementById('inputNickname').value.trim();
+    const defaultContactType = document.getElementById('inputDefaultContactType').value;
+    const defaultContactValue = document.getElementById('inputDefaultContactValue').value.trim();
+    const msgSuccess = document.getElementById('profileMsgSuccess');
+    const msgError = document.getElementById('profileMsgError');
+    
+    msgSuccess.classList.remove('show');
+    msgError.classList.remove('show');
+    
+    if (nickname && (nickname.length < 2 || nickname.length > 20)) {
+        msgError.innerText = '✖ 昵称长度需在2-20个字符之间';
+        msgError.classList.add('show');
+        return;
+    }
+    
+    try {
+        const res = await fetch('/user/update', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                nickname,
+                default_contact_type: defaultContactType,
+                default_contact_value: defaultContactValue
+            })
+        });
+        const data = await res.json();
+        
+        if (data.ok === 1) {
+            msgSuccess.classList.add('show');
+            setTimeout(() => msgSuccess.classList.remove('show'), 3000);
+        } else {
+            msgError.innerText = '✖ ' + (data.msg || '保存失败');
+            msgError.classList.add('show');
+        }
+    } catch (e) {
+        msgError.innerText = '✖ 保存失败，请重试';
+        msgError.classList.add('show');
+    }
+}
+
+// 保存头像
+async function saveAvatar() {
+    const avatar = document.getElementById('inputAvatarUrl').value.trim();
+    const msgSuccess = document.getElementById('avatarMsgSuccess');
+    const msgError = document.getElementById('avatarMsgError');
+    
+    msgSuccess.classList.remove('show');
+    msgError.classList.remove('show');
+    
+    try {
+        const res = await fetch('/user/update', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({avatar})
+        });
+        const data = await res.json();
+        
+        if (data.ok === 1) {
+            msgSuccess.classList.add('show');
+            setTimeout(() => msgSuccess.classList.remove('show'), 3000);
+        } else {
+            msgError.innerText = '✖ ' + (data.msg || '保存失败');
+            msgError.classList.add('show');
+        }
+    } catch (e) {
+        msgError.innerText = '✖ 保存失败，请重试';
+        msgError.classList.add('show');
+    }
+}
+
+// 清除头像
+async function clearAvatar() {
+    if (!confirm('确定要清除头像吗？')) return;
+    
+    document.getElementById('inputAvatarUrl').value = '';
+    previewAvatar();
+    await saveAvatar();
+}
+
+// 修改密码
+async function changePassword() {
+    const currentPwd = document.getElementById('inputCurrentPwd').value;
+    const newPwd = document.getElementById('inputNewPwd').value;
+    const confirmPwd = document.getElementById('inputConfirmPwd').value;
+    const msgSuccess = document.getElementById('pwdMsgSuccess');
+    const msgError = document.getElementById('pwdMsgError');
+    
+    msgSuccess.classList.remove('show');
+    msgError.classList.remove('show');
+    
+    if (!currentPwd || !newPwd || !confirmPwd) {
+        msgError.innerText = '✖ 请填写所有密码字段';
+        msgError.classList.add('show');
+        return;
+    }
+    
+    if (newPwd.length < 6) {
+        msgError.innerText = '✖ 新密码至少6个字符';
+        msgError.classList.add('show');
+        return;
+    }
+    
+    if (newPwd !== confirmPwd) {
+        msgError.innerText = '✖ 两次输入的密码不一致';
+        msgError.classList.add('show');
+        return;
+    }
+    
+    try {
+        const res = await fetch('/user/change-password', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({current_password: currentPwd, new_password: newPwd})
+        });
+        const data = await res.json();
+        
+        if (data.ok === 1) {
+            msgSuccess.classList.add('show');
+            document.getElementById('inputCurrentPwd').value = '';
+            document.getElementById('inputNewPwd').value = '';
+            document.getElementById('inputConfirmPwd').value = '';
+            setTimeout(() => msgSuccess.classList.remove('show'), 3000);
+        } else {
+            msgError.innerText = '✖ ' + (data.msg || '修改失败');
+            msgError.classList.add('show');
+        }
+    } catch (e) {
+        msgError.innerText = '✖ 修改失败，请重试';
+        msgError.classList.add('show');
+    }
+}
+
+// 绑定邮箱
+async function bindEmail() {
+    const currentEmail = document.getElementById('inputEmail').value.trim();
+    const newEmailRow = document.getElementById('newEmailRow');
+    const newEmailInput = document.getElementById('inputNewEmail');
+    const btn = document.getElementById('bindEmailBtn');
+    const cancelBtn = document.getElementById('cancelEmailBtn');
+    const msgSuccess = document.getElementById('emailMsgSuccess');
+    const msgError = document.getElementById('emailMsgError');
+    
+    msgSuccess.classList.remove('show');
+    msgError.classList.remove('show');
+    
+    if (currentEmail && newEmailRow.style.display === 'none') {
+        newEmailRow.style.display = 'flex';
+        newEmailInput.value = '';
+        btn.innerText = '✓ 确认绑定';
+        cancelBtn.style.display = 'inline-flex';
+        return;
+    }
+    
+    const email = newEmailRow.style.display === 'none' ? currentEmail : newEmailInput.value.trim();
+    
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        msgError.innerText = '✖ 请输入有效的邮箱地址';
+        msgError.classList.add('show');
+        return;
+    }
+    
+    try {
+        const res = await fetch('/user/bind-email', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({email})
+        });
+        const data = await res.json();
+        
+        if (data.ok === 1) {
+            msgSuccess.classList.add('show');
+            document.getElementById('inputEmail').value = email;
+            document.getElementById('infoEmail').innerText = email;
+            cancelEmail();
+            setTimeout(() => msgSuccess.classList.remove('show'), 3000);
+        } else {
+            msgError.innerText = '✖ ' + (data.msg || '绑定失败');
+            msgError.classList.add('show');
+        }
+    } catch (e) {
+        msgError.innerText = '✖ 绑定失败，请重试';
+        msgError.classList.add('show');
+    }
+}
+
+function cancelEmail() {
+    document.getElementById('newEmailRow').style.display = 'none';
+    document.getElementById('bindEmailBtn').innerText = '✏️ 修改邮箱';
+    document.getElementById('cancelEmailBtn').style.display = 'none';
+    document.getElementById('emailMsgSuccess').classList.remove('show');
+    document.getElementById('emailMsgError').classList.remove('show');
+}
+
+// 页面加载
+document.addEventListener('DOMContentLoaded', async function() {
+    if (await checkLogin()) {
+        loadUserInfo();
+    }
+});
+</script>
+</body>
+</html>

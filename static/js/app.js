@@ -69,7 +69,6 @@ window.onload = async function(){
     document.getElementById("monthSel").value = nowMonth;
     await loadSiteConfig();
     loadStats();
-    loadRanking();
     loadFriendLinks();
     renderNav();
     fetchUserNickname();
@@ -77,7 +76,6 @@ window.onload = async function(){
     refreshSchedule();
     refreshRoleBtn();
     loadMyReservations();
-    loadMainForumComments();
     checkInboxUnread();
     // 每30秒刷新一次未读邮件数量
     setInterval(checkInboxUnread, 30000);
@@ -89,7 +87,6 @@ async function loadSiteConfig() {
         const data = await resp.json();
         if (data.ok) {
             if (data.configs.site_title) document.getElementById("siteTitle").textContent = data.configs.site_title;
-            if (data.configs.site_announcement) document.getElementById("siteAnnouncement").textContent = "公告：" + data.configs.site_announcement;
             if (data.configs.footer_text) document.querySelector(".footer-text").textContent = data.configs.footer_text;
             const localBgImage = localStorage.getItem('localBackgroundImage');
             if (localBgImage) {
@@ -108,8 +105,49 @@ async function loadSiteConfig() {
             if (data.configs.maintenance_mode === "1" && currentRole < ROLE_ADMIN) {
                 showMaintenanceModal(data.configs.maintenance_message || "网站正在维护中，请稍后再试...");
             }
+            if (data.configs.site_start_time) {
+                startRunTimeCounter(data.configs.site_start_time);
+            }
         }
     } catch (e) { console.error("加载网站配置失败:", e); }
+}
+
+let runTimeInterval = null;
+
+function startRunTimeCounter(startTimeStr) {
+    if (runTimeInterval) clearInterval(runTimeInterval);
+    
+    const normalizedTime = startTimeStr.replace(" ", "T");
+    const startTime = new Date(normalizedTime);
+    
+    if (isNaN(startTime.getTime())) {
+        const valueEl = document.querySelector(".run-time-value");
+        if (valueEl) valueEl.textContent = "时间格式错误";
+        return;
+    }
+    
+    function update() {
+        const now = new Date();
+        const diff = now - startTime;
+        const valueEl = document.querySelector(".run-time-value");
+        
+        if (diff < 0) {
+            if (valueEl) valueEl.textContent = "尚未开始";
+            return;
+        }
+        
+        const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+        const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+        const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+        
+        if (valueEl) {
+            valueEl.textContent = `${days}天 ${hours}时 ${minutes}分 ${seconds}秒`;
+        }
+    }
+    
+    update();
+    runTimeInterval = setInterval(update, 1000);
 }
 
 function showMaintenanceModal(message) {
@@ -131,40 +169,6 @@ async function loadStats() {
             document.getElementById("statsCard").style.display = "none";
         }
     } catch (e) { console.error("加载统计数据失败:", e); }
-}
-
-async function loadRanking() {
-    try {
-        const resp = await fetch("/get_reservation_ranking", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({})});
-        const data = await resp.json();
-        if (!data.ok || !data.show) {
-            document.getElementById("rankingCard").style.display = "none";
-            return;
-        }
-        document.getElementById("rankingCard").style.display = "block";
-        if (data.year_ranking && data.year_ranking.length > 0) {
-            let yearHtml = '';
-            data.year_ranking.slice(0, 5).forEach((item, index) => {
-                const medals = ['🥇', '🥈', '🥉'];
-                const rankSymbol = index < 3 ? medals[index] : (index + 1);
-                yearHtml += `<div class="ranking-item" onclick="jumpToSchedule(${item.schedule_id})"><span class="rank">${rankSymbol}</span>${item.server_id.substring(0, 8)}<span class="count">${item.count}人</span></div>`;
-            });
-            document.getElementById("yearRanking").innerHTML = yearHtml || '<div class="empty-tip">暂无数据</div>';
-        } else {
-            document.getElementById("yearRanking").innerHTML = '<div class="empty-tip">暂无数据</div>';
-        }
-        if (data.month_ranking && data.month_ranking.length > 0) {
-            let monthHtml = '';
-            data.month_ranking.slice(0, 5).forEach((item, index) => {
-                const medals = ['🥇', '🥈', '🥉'];
-                const rankSymbol = index < 3 ? medals[index] : (index + 1);
-                monthHtml += `<div class="ranking-item" onclick="jumpToSchedule(${item.schedule_id})"><span class="rank">${rankSymbol}</span>${item.server_id.substring(0, 8)}<span class="count">${item.count}人</span></div>`;
-            });
-            document.getElementById("monthRanking").innerHTML = monthHtml || '<div class="empty-tip">暂无数据</div>';
-        } else {
-            document.getElementById("monthRanking").innerHTML = '<div class="empty-tip">暂无数据</div>';
-        }
-    } catch (e) { console.error("加载排行榜失败:", e); }
 }
 
 async function loadFriendLinks() {
@@ -236,8 +240,14 @@ async function fetchUserNickname(){
     try{
         const res = await fetch("/user/info", {method: "POST"});
         const data = await res.json();
-        if(data.ok === 1 && data.nickname){
-            localStorage.setItem('user_nickname', data.nickname);
+        if(data.ok === 1){
+            if(data.nickname){
+                localStorage.setItem('user_nickname', data.nickname);
+            }
+            // 保存角色信息
+            if(data.role){
+                localStorage.setItem('user_role', data.role);
+            }
             renderNav();
         }
     }catch(e){
@@ -245,32 +255,48 @@ async function fetchUserNickname(){
     }
 }
 
+function getUserRole(){
+    // 优先使用模板中定义的currentRole
+    if (typeof currentRole !== 'undefined') {
+        return currentRole;
+    }
+    return localStorage.getItem('user_role') || 'member';
+}
+
+function isAdmin(){
+    const role = getUserRole();
+    return role === ROLE_ADMIN || role === ROLE_SUPER_ADMIN;
+}
+
 function renderNav(){
     const navBox = document.getElementById("navBox");
     const isLoggedIn = currentUser && currentUser !== "" && currentUser !== "None";
+    
     if(isLoggedIn){
         const displayName = getDisplayName();
         const firstChar = displayName.charAt(0).toUpperCase();
+        const adminMenuItem = isAdmin() ? `
+                    <div class="user-dropdown-item" onclick="window.location.href='/admin';closeUserDropdown()">
+                        🔧 管理后台
+                    </div>
+                    <div class="user-dropdown-divider"></div>` : '';
+        
         navBox.innerHTML = `
             <div class="user-dropdown-container">
                 <div class="user-dropdown-trigger" onclick="toggleUserDropdown()">
                     <div class="user-avatar">${firstChar}</div>
-                    <span>${displayName}</span>
+                    <span class="user-name">${displayName}</span>
                     <span style="font-size:12px;opacity:0.6;">▼</span>
                 </div>
                 <div class="user-dropdown-menu" id="userDropdownMenu">
-                    <div class="user-dropdown-item" onclick="openProfile();closeUserDropdown()">
-                        👤 个人中心
+                    ${adminMenuItem}
+                    <div class="user-dropdown-item" onclick="window.location.href='/settings';closeUserDropdown()">
+                        ⚙️ 个人设置
                     </div>
-                    <div class="user-dropdown-item" onclick="closeUserDropdown();window.location.href='/points'">
-                        💎 积分中心
-                    </div>
+                    <!-- 背景设置（已隐藏，功能开发中）
                     <div class="user-dropdown-item" onclick="openBgSettings();closeUserDropdown()">
                         🎨 背景设置
-                    </div>
-                    <div class="user-dropdown-item" onclick="openInbox();closeUserDropdown()">
-                        📧 站内邮件 <span id="inboxUnreadCount" style="background:#E74C3C;border-radius:10px;padding:0 5px;font-size:10px;display:none;">0</span>
-                    </div>
+                    </div> -->
                     <div class="user-dropdown-divider"></div>
                     <div class="user-dropdown-item" onclick="logout()">
                         🚪 退出登录
@@ -314,12 +340,10 @@ document.addEventListener("click", function(e){
 function refreshRoleBtn(){
     const addBtn = document.getElementById("addBtn");
     const applyOpBtn = document.getElementById("applyOpBtn");
-    const adminBtn = document.getElementById("adminBtn");
     const isLoggedIn = currentUser && currentUser !== "" && currentUser !== "None";
     if(!isLoggedIn){
         addBtn.style.display = "none";
         applyOpBtn.style.display = "none";
-        adminBtn.style.display = "none";
         return;
     }
     if(currentRole === ROLE_OP || currentRole === ROLE_TRUSTED_OP || currentRole === ROLE_ADMIN || currentRole === ROLE_SUPER_ADMIN){
@@ -342,11 +366,6 @@ function refreshRoleBtn(){
         }else{
             applyOpBtn.style.display = "none";
         }
-    }
-    if(currentRole === ROLE_ADMIN || currentRole === ROLE_SUPER_ADMIN){
-        adminBtn.style.display = "inline-block";
-    }else{
-        adminBtn.style.display = "none";
     }
 }
 
@@ -377,9 +396,23 @@ function switchModal(type){
     else if(type === "reg") openRegister();
     else if(type === "forgot") openForgot();
 }
-function openAddModal(){
+async function openAddModal(){
     openModal("addScheduleModal");
     loadScheduleTags();
+    
+    // 加载默认联系方式
+    if(currentUser){
+        try{
+            const res = await fetch("/get_default_contact", {method: "POST"});
+            const data = await res.json();
+            if(data.ok === 1 && data.contact_type && data.contact_value){
+                document.getElementById("contactType").value = data.contact_type;
+                document.getElementById("contactValue").value = data.contact_value;
+            }
+        }catch(e){
+            console.error("加载默认联系方式失败:", e);
+        }
+    }
     document.getElementById("endDateContainer").style.display = "none";
     document.getElementById("scheduleTime").onchange = function(){
         const customInput = document.getElementById("scheduleTimeCustom");
@@ -1343,7 +1376,7 @@ function renderTimeline(list, year, month){
                 <div class="timeline-item ${statusCls}" onclick="showScheduleDetail(${event.id})">
                     <div class="timeline-item-header">
                         <div class="timeline-item-time">🕐 ${event.time}</div>
-                        <span class="timeline-item-status ${statusCls}">${event.status === 'live' ? '直播中' : event.status === 'past' ? '已结束' : '待开始'}</span>
+                        <span class="timeline-item-status ${statusCls}">${event.status === 'live' ? '进行中' : event.status === 'past' ? '已结束' : '待开始'}</span>
                     </div>
                     <div class="timeline-item-server">🎮 服务器ID：${event.server_id}</div>
                     <div class="timeline-item-creator">👤 ${event.creator_nickname || '匿名'}</div>
@@ -1373,7 +1406,14 @@ function renderCardGrid(list, year, month){
         wechat: '💬',
         other: '📌'
     };
-    if(processedList.length === 0){
+    
+    // 按日期排序
+    const sortedList = [...processedList].sort((a, b) => {
+        if (a.day !== b.day) return a.day - b.day;
+        return a.time.localeCompare(b.time);
+    });
+    
+    if(sortedList.length === 0){
         body.innerHTML = `
             <div class="empty-state">
                 <div style="font-size:48px;margin-bottom:16px;">🃏</div>
@@ -1383,51 +1423,99 @@ function renderCardGrid(list, year, month){
         `;
         return;
     }
+    
     let html = '<div class="card-grid">';
-    processedList.forEach(event => {
-        let statusCls = event.status;
-        let contactHtml = "";
-        if(event.contact_value){
-            const icon = icons[event.contact_type] || '';
-            contactHtml = `<div class="schedule-card-contact">${icon} ${event.contact_value}</div>`;
-        }
-        let btnHtml = "";
-        if(currentRole === ROLE_ADMIN || currentRole === ROLE_SUPER_ADMIN){
-            btnHtml = `
-                <div class="schedule-card-btns">
-                    <button class="edit" onclick="openEditModal(${event.id}); event.stopPropagation();">✏️</button>
-                    <button class="del" onclick="delSchedule(${event.id}); event.stopPropagation();">🗑️</button>
-                </div>
-            `;
-        } else if((currentRole === ROLE_OP || currentRole === ROLE_TRUSTED_OP) && event.created_by === currentUser){
-            btnHtml = `
-                <div class="schedule-card-btns">
-                    <button class="edit" onclick="openEditModal(${event.id}); event.stopPropagation();">✏️</button>
-                    <button class="del" onclick="delSchedule(${event.id}); event.stopPropagation();">🗑️</button>
-                </div>
-            `;
-        }
+    
+    // 按日期分组显示
+    sortedList.forEach(event => {
+        const statusCls = event.status;
+        const hasServerMonitor = event.mc_status_check == 1 && event.ip;
+        const statusText = event.status === 'live' ? '进行中' : event.status === 'past' ? '已结束' : '待开始';
+        const statusColor = event.status === 'live' ? '#42C9D8' : event.status === 'past' ? '#999' : '#4CAF50';
+        
         html += `
             <div class="schedule-card ${statusCls}" onclick="showScheduleDetail(${event.id})">
                 <div class="schedule-card-header">
-                    <div class="schedule-card-date">${event.day}</div>
-                    <div class="schedule-card-month">${year}年${month}月</div>
+                    <div class="schedule-card-date">${event.month}.${event.day}</div>
                 </div>
                 <div class="schedule-card-body">
-                    <div class="schedule-card-time">🕐 ${event.time}</div>
-                    <div class="schedule-card-server">🎮 服务器ID：${event.server_id}</div>
-                    <div class="schedule-card-creator">👤 ${event.creator_nickname || '匿名'}</div>
-                    ${contactHtml}
+                    <div class="schedule-card-server">🎮 ${event.server_id || '未知服务器'}</div>
                 </div>
-                <div class="schedule-card-footer">
-                    <span class="schedule-card-status ${statusCls}">${event.status === 'live' ? '直播中' : event.status === 'past' ? '已结束' : '待开始'}</span>
-                    ${btnHtml}
+                ${hasServerMonitor ? `
+                <div class="schedule-card-monitor" id="card-monitor-${event.id}">
+                    <div class="monitor-status-row" id="card-status-${event.id}">
+                        <span class="status-dot-animate"></span>
+                        <span class="status-text">检测中</span>
+                    </div>
+                    <div class="monitor-info-row">
+                        <div class="monitor-item">
+                            <span class="monitor-label">版本</span>
+                            <span class="monitor-value" id="card-version-${event.id}">-</span>
+                        </div>
+                        <div class="monitor-item">
+                            <span class="monitor-label">在线</span>
+                            <span class="monitor-value" id="card-players-${event.id}">-</span>
+                        </div>
+                        <div class="monitor-item">
+                            <span class="monitor-label">延迟</span>
+                            <span class="monitor-value" id="card-latency-${event.id}">-</span>
+                        </div>
+                    </div>
                 </div>
+                ` : ''}
             </div>
         `;
     });
+    
     html += '</div>';
     body.innerHTML = html;
+    
+    // 获取有监控的卡片的服务器状态
+    processedList.forEach(event => {
+        if(event.mc_status_check == 1 && event.ip){
+            fetchCardServerStatus(event.id, event.ip);
+        }
+    });
+}
+
+// 获取卡片服务器状态
+async function fetchCardServerStatus(scheduleId, ip) {
+    console.log(`查询服务器状态: scheduleId=${scheduleId}, ip=${ip}`);
+    try {
+        const res = await fetch("/mc_server/status",{
+            method: "POST",
+            headers:{"Content-Type":"application/json"},
+            body: JSON.stringify({host: ip})
+        });
+        const data = await res.json();
+        console.log(`API返回:`, data);
+        const statusEl = document.getElementById(`card-status-${scheduleId}`);
+        const versionEl = document.getElementById(`card-version-${scheduleId}`);
+        const playersEl = document.getElementById(`card-players-${scheduleId}`);
+        const latencyEl = document.getElementById(`card-latency-${scheduleId}`);
+        
+        if(data.ok === 1){
+            if(statusEl) statusEl.innerHTML = `<span class="status-dot-animate online"></span><span class="status-text">在线</span>`;
+            if(versionEl) versionEl.textContent = data.version || '-';
+            if(playersEl) playersEl.textContent = `${data.players_online || 0}/${data.players_max || 0}`;
+            if(latencyEl) latencyEl.textContent = data.latency ? data.latency + 'ms' : '-';
+        } else {
+            if(statusEl) statusEl.innerHTML = `<span class="status-dot-animate offline"></span><span class="status-text">离线</span>`;
+            if(versionEl) versionEl.textContent = '-';
+            if(playersEl) playersEl.textContent = '-';
+            if(latencyEl) latencyEl.textContent = '-';
+        }
+    } catch(e) {
+        console.error(`查询失败:`, e);
+        const statusEl = document.getElementById(`card-status-${scheduleId}`);
+        const versionEl = document.getElementById(`card-version-${scheduleId}`);
+        const playersEl = document.getElementById(`card-players-${scheduleId}`);
+        const latencyEl = document.getElementById(`card-latency-${scheduleId}`);
+        if(statusEl) statusEl.innerHTML = `<span class="status-dot-animate offline"></span><span>失败</span>`;
+        if(versionEl) versionEl.textContent = '-';
+        if(playersEl) playersEl.textContent = '-';
+        if(latencyEl) latencyEl.textContent = '-';
+    }
 }
 
 async function showScheduleDetail(scheduleId) {
@@ -1506,7 +1594,7 @@ async function showScheduleDetail(scheduleId) {
         `;
     }
     
-    if(event.ip && (event.mc_status_check === undefined || event.mc_status_check === 1) && currentUser && currentUser !== "" && currentUser !== "None") {
+    if(event.ip && (event.mc_status_check === undefined || event.mc_status_check === 1)) {
         detailHtml += `
             <div class="detail-item">
                 <button onclick="openServerStatusModal('${event.ip}', ${scheduleId}, event)" style="background:#3498DB;color:#fff;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;font-size:12px;">
@@ -1529,24 +1617,252 @@ async function showScheduleDetail(scheduleId) {
     if(currentUser && event.status === "future") {
         detailHtml += `<div class="detail-item"><div id="reservationBtnArea"></div></div>`;
     }
-    detailHtml += `
-        <div class="detail-item" style="border-top:1px dashed #444;padding-top:15px;margin-top:10px">
-            <strong>💬 档期评论</strong>
-            <div class="forum-input-group" style="margin-top:10px">
-                <textarea id="scheduleForumComment_${scheduleId}" placeholder="对这个档口说点什么..."></textarea>
-            </div>
-            <button class="forum-btn" onclick="createScheduleForumComment(${scheduleId})">发表评论</button>
-            <div id="scheduleForumComments_${scheduleId}" style="margin-top:10px">
-                <div class="empty-tip">加载中...</div>
-            </div>
-        </div>
-    `;
     document.getElementById('scheduleDetail').innerHTML = detailHtml;
     if(currentUser && event.status === "future") {
         await checkAndShowReservationBtn(scheduleId);
     }
-    loadScheduleForumComments(scheduleId);
 }
+
+// ==================== 档期详情弹窗控制 ====================
+let scheduleDragging = false;
+let scheduleDragOffset = { x: 0, y: 0 };
+let currentScheduleDetailId = null;
+let isScheduleModalActive = false;
+
+function openScheduleDetailModal() {
+    if (!currentScheduleDetailId) return;
+    isScheduleModalActive = true;
+    const modal = document.getElementById('scheduleDetailModal');
+    const content = document.getElementById('scheduleDetailModalContent');
+    if (modal && content) {
+        content.style.left = '';
+        content.style.top = '';
+        content.style.transform = '';
+        modal.style.display = 'flex';
+    }
+}
+
+function closeScheduleDetailModal() {
+    isScheduleModalActive = false;
+    const modal = document.getElementById('scheduleDetailModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+function closeDetailCard() {
+    const detailCard = document.getElementById('detailCard');
+    if (detailCard) {
+        detailCard.style.display = 'block';
+        document.getElementById('scheduleDetail').innerHTML = '<div class="empty-tip">点击左侧日历中的档期查看详情</div>';
+    }
+    closeScheduleDetailModal();
+}
+
+// 初始化拖拽功能
+function initScheduleModalDrag() {
+    const header = document.getElementById('scheduleDetailModalHeader');
+    const content = document.getElementById('scheduleDetailModalContent');
+    const overlay = document.getElementById('scheduleDetailModal');
+    
+    if (!header || !content || !overlay) return;
+    
+    header.addEventListener('mousedown', function(e) {
+        if (e.target.closest('.draggable-modal-close')) return;
+        
+        scheduleDragging = true;
+        const rect = content.getBoundingClientRect();
+        scheduleDragOffset.x = e.clientX - rect.left;
+        scheduleDragOffset.y = e.clientY - rect.top;
+        content.style.transition = 'none';
+    });
+    
+    document.addEventListener('mousemove', function(e) {
+        if (!scheduleDragging) return;
+        
+        const overlayRect = overlay.getBoundingClientRect();
+        let newX = e.clientX - overlayRect.left - scheduleDragOffset.x;
+        let newY = e.clientY - overlayRect.top - scheduleDragOffset.y;
+        
+        // 限制在视口内
+        const contentRect = content.getBoundingClientRect();
+        newX = Math.max(0, Math.min(newX, overlayRect.width - contentRect.width));
+        newY = Math.max(0, Math.min(newY, overlayRect.height - contentRect.height));
+        
+        content.style.left = newX + 'px';
+        content.style.top = newY + 'px';
+        content.style.transform = 'none';
+    });
+    
+    document.addEventListener('mouseup', function() {
+        scheduleDragging = false;
+        if (content) {
+            content.style.transition = '';
+        }
+    });
+}
+
+// 页面内显示详情，同时更新弹窗内容
+function showScheduleDetailInPageAndModal(scheduleId) {
+    showScheduleDetail(scheduleId);
+    // 同时更新弹窗内容（但不打开弹窗）
+    showScheduleDetailInModal(scheduleId);
+}
+
+// 显示详情在弹窗中（不打开弹窗）
+function showScheduleDetailInModal(scheduleId) {
+    const event = currentScheduleList.find(s => s.id == scheduleId);
+    if (!event) return;
+    currentScheduleDetailId = scheduleId;
+    
+    const icons = {
+        qq: '🐧',
+        phone: '📞',
+        wechat: '💬',
+        other: '📌'
+    };
+    const displayYear = parseInt(document.getElementById("yearSel").value, 10);
+    const displayMonth = parseInt(document.getElementById("monthSel").value, 10);
+    let dateStr = `${displayYear}年${displayMonth}月${event.day}日`;
+    if (event.type === 'long' && event.end_month) {
+        dateStr += ` ~ ${event.end_month}月${event.end_day}日`;
+        if (event.end_year && event.end_year !== displayYear) {
+            dateStr = `${displayYear}年${displayMonth}月${event.day}日 ~ ${event.end_year}年${event.end_month}月${event.end_day}日`;
+        }
+    }
+    
+    let detailHtml = `<div class="detail-item"><strong>📅 日期：</strong> ${dateStr}</div>`;
+    detailHtml += `<div class="detail-item"><strong>🕐 时段：</strong> ${event.time}</div>`;
+    if (event.type === 'long') {
+        detailHtml += `<div class="detail-item"><strong>🔄 开服类型：</strong> <span style="color:#42C9D8">长期开服</span></div>`;
+    }
+    detailHtml += `<div class="detail-item"><strong>🎮 服务器ID：</strong> ${event.server_id}</div>`;
+    if(event.creator_nickname) {
+        detailHtml += `<div class="detail-item"><strong>👤 提交者：</strong> ${event.creator_nickname}</div>`;
+    }
+    if(event.reservation_count !== undefined) {
+        detailHtml += `<div class="detail-item"><strong>📝 预约人数：</strong> <span style="color:#42C9D8">${event.reservation_count}</span> 人</div>`;
+    }
+    if(event.contact_value) {
+        const icon = icons[event.contact_type] || '';
+        const contactTypeNames = {
+            qq: 'QQ',
+            phone: '电话',
+            wechat: '微信',
+            other: '联系方式'
+        };
+        const typeName = contactTypeNames[event.contact_type] || '联系方式';
+        detailHtml += `
+            <div class="detail-item">
+                <strong>${icon} ${typeName}：</strong> 
+                <span class="copyable-text" onclick="copyText('${event.contact_value}')">${event.contact_value}</span>
+            </div>
+        `;
+    }
+    if(event.ip) {
+        detailHtml += `
+            <div class="detail-item">
+                <strong>🖥️ 服务器IP：</strong> 
+                <span class="copyable-text" onclick="copyText('${event.ip}')">${event.ip}</span>
+            </div>
+        `;
+    }
+    
+    if(currentRole === ROLE_ADMIN || currentRole === ROLE_SUPER_ADMIN) {
+        const mcStatusCheck = event.mc_status_check === undefined ? 1 : event.mc_status_check;
+        detailHtml += `
+            <div class="detail-item" style="background:rgba(52,152,219,0.1);padding:10px;border-radius:8px;border-left:3px solid #3498DB;">
+                <strong>🔧 管理员设置：</strong>
+                <div style="margin-top:8px;display:flex;align-items:center;gap:15px;">
+                    <label style="cursor:pointer;display:flex;align-items:center;gap:5px;">
+                        <input type="radio" name="mcStatusCheck_${scheduleId}" value="1" ${mcStatusCheck === 1 ? 'checked' : ''} onchange="toggleMcStatusCheck(${scheduleId}, 1)"> 
+                        <span>开启状态查询</span>
+                    </label>
+                    <label style="cursor:pointer;display:flex;align-items:center;gap:5px;">
+                        <input type="radio" name="mcStatusCheck_${scheduleId}" value="0" ${mcStatusCheck === 0 ? 'checked' : ''} onchange="toggleMcStatusCheck(${scheduleId}, 0)"> 
+                        <span>关闭状态查询</span>
+                    </label>
+                </div>
+            </div>
+        `;
+    }
+    
+    if(event.ip && (event.mc_status_check === undefined || event.mc_status_check === 1)) {
+        detailHtml += `
+            <div class="detail-item">
+                <button onclick="openServerStatusModal('${event.ip}', ${scheduleId}, event)" style="background:#3498DB;color:#fff;padding:8px 16px;border:none;border-radius:10px;cursor:pointer;font-size:13px;font-weight:500;">
+                    🖥️ 查询服务器状态
+                </button>
+            </div>
+        `;
+    }
+    
+    let canViewReservations = false;
+    if(event.reservation_count > 0) {
+        if(currentRole === ROLE_ADMIN || currentRole === ROLE_SUPER_ADMIN) {
+            canViewReservations = true;
+        } else if((currentRole === ROLE_OP || currentRole === ROLE_TRUSTED_OP) && event.created_by === currentUser) {
+            canViewReservations = true;
+        }
+    }
+    if(canViewReservations) {
+        detailHtml += `<div class="detail-item"><button class="forum-btn" style="margin-top:8px" onclick="showReservationList(${scheduleId})">📋 查看预约人员</button></div>`;
+    }
+    if(currentUser && event.status === "future") {
+        detailHtml += `<div class="detail-item"><div id="modalReservationBtnArea"></div></div>`;
+    }
+    
+    document.getElementById('scheduleDetailModalBody').innerHTML = detailHtml;
+    
+    // 如果是未来档期，加载预约按钮
+    if(currentUser && event.status === "future") {
+        checkAndShowModalReservationBtn(scheduleId);
+    }
+}
+
+// 弹窗内的预约按钮
+async function checkAndShowModalReservationBtn(scheduleId) {
+    try {
+        const res = await fetch("/check_reservation", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({schedule_id: scheduleId})
+        });
+        const data = await res.json();
+        const btnArea = document.getElementById("modalReservationBtnArea");
+        if(!btnArea) return;
+        if(data.ok === 1) {
+            if(data.reserved) {
+                btnArea.innerHTML = `
+                    <button style="background:#E74C3C;color:#fff;padding:10px 20px;border:none;border-radius:12px;cursor:pointer;font-size:14px;font-weight:600;" 
+                            onclick="toggleReservation('${scheduleId}')">
+                        取消预约
+                    </button>
+                `;
+            } else {
+                btnArea.innerHTML = `
+                    <button style="background:#42C9D8;color:#fff;padding:10px 20px;border:none;border-radius:12px;cursor:pointer;font-size:14px;font-weight:600;" 
+                            onclick="toggleReservation('${scheduleId}')">
+                        立即预约
+                    </button>
+                `;
+            }
+        }
+    } catch(e) {
+        console.error("检查预约状态失败:", e);
+    }
+}
+
+// 修改原来的showScheduleDetail，在显示时同时更新弹窗
+const originalShowScheduleDetail = showScheduleDetail;
+showScheduleDetail = function(scheduleId) {
+    originalShowScheduleDetail(scheduleId);
+    showScheduleDetailInModal(scheduleId);
+    // 如果弹窗处于激活状态，则自动打开弹窗
+    if (isScheduleModalActive) {
+        openScheduleDetailModal();
+    }
+};
 
 async function checkAndShowReservationBtn(scheduleId) {
     try {
@@ -2359,9 +2675,15 @@ async function checkApplyStatus(){
 async function submitApplyOp(){
     const serverIp = document.getElementById("applyServerIp").value.trim();
     const contact = document.getElementById("applyContact").value.trim();
+    const defaultContactType = document.getElementById("applyDefaultContactType").value;
+    const defaultContactValue = document.getElementById("applyDefaultContactValue").value.trim();
     
     if(!serverIp){
         alert("请填写服务器IP地址");
+        return;
+    }
+    if(!defaultContactType || !defaultContactValue){
+        alert("请填写默认联系方式");
         return;
     }
     
@@ -2369,7 +2691,12 @@ async function submitApplyOp(){
         const res = await fetch("/apply_op", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({server_ip: serverIp, contact: contact})
+            body: JSON.stringify({
+                server_ip: serverIp, 
+                contact: contact,
+                default_contact_type: defaultContactType,
+                default_contact_value: defaultContactValue
+            })
         });
         const data = await res.json();
         
@@ -2396,189 +2723,6 @@ function openApplyOpModal(){
     if(btn) btn.disabled = true;
     if(content) content.scrollTop = 0;
     openModal("applyOpNoticeModal");
-}
-
-function renderComments(comments, isMainForum) {
-    let html = '';
-    comments.forEach(comment => {
-        let deleteButtonHtml = '';
-        if(currentRole === ROLE_ADMIN || currentRole === ROLE_SUPER_ADMIN) {
-            deleteButtonHtml = `
-                <button class="forum-btn" style="background:#E74C3C; color:#fff; font-size:10px; padding:2px 5px; margin-left:10px;"
-                        onclick="deleteComment(${comment.id}, ${isMainForum})">删除</button>
-            `;
-        }
-        html += `
-            <div class="forum-post">
-                <div class="forum-post-meta">👤 ${comment.nickname || '匿名用户'} | ${comment.created_at} ${deleteButtonHtml}</div>
-                <div class="forum-post-content">${comment.content}</div>
-            </div>
-        `;
-    });
-    return html;
-}
-
-async function deleteComment(commentId, isMainForum) {
-    if (!confirm("确定要删除这条评论吗？")) return;
-    let url = isMainForum ? "/forum/delete_comment" : "/schedule_forum/delete_comment";
-    try {
-        const res = await fetch(url, {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({comment_id: commentId})
-        });
-        const data = await res.json();
-        if (data.ok === 1) {
-            alert(data.msg || "删除成功！");
-            if (isMainForum) {
-                loadMainForumComments();
-            } else {
-                loadScheduleForumComments(currentViewingScheduleId);
-            }
-        } else {
-            alert(data.msg || "删除失败！");
-        }
-    } catch(e) {
-        console.error(e);
-        alert("请求出错，请查看控制台");
-    }
-}
-
-async function loadMainForumComments() {
-    try {
-        const res = await fetch("/forum/get_comments", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"}
-        });
-        const data = await res.json();
-        const commentsDom = document.getElementById("mainForumComments");
-        if (commentsDom && data.ok === 1 && data.comments) {
-            commentsDom.innerHTML = renderComments(data.comments, true);
-        } else if (commentsDom) {
-            commentsDom.innerHTML = '<div class="empty-tip">加载失败</div>';
-        }
-    } catch(e) {
-        console.error(e);
-        const commentsDom = document.getElementById("mainForumComments");
-        if (commentsDom) {
-            commentsDom.innerHTML = '<div class="empty-tip">加载失败</div>';
-        }
-    }
-}
-
-async function createMainForumComment() {
-    if (!currentUser) {
-        alert("请先登录！");
-        openLogin();
-        return;
-    }
-    const content = document.getElementById("mainForumComment").value.trim();
-    if (!content) {
-        alert("请填写评论内容！");
-        return;
-    }
-    try {
-        const res = await fetch("/forum/create_comment", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({content: content})
-        });
-        const data = await res.json();
-        if (data.ok === 1) {
-            document.getElementById("mainForumComment").value = "";
-            loadMainForumComments();
-        } else {
-            alert(data.msg || "发表失败！");
-        }
-    } catch(e) {
-        console.error(e);
-        alert("请求出错，请查看控制台");
-    }
-}
-
-async function loadScheduleForumComments(scheduleId) {
-    try {
-        const res = await fetch("/schedule_forum/get_comments", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({schedule_id: scheduleId})
-        });
-        const data = await res.json();
-        const commentsDom = document.getElementById(`scheduleForumComments_${scheduleId}`);
-        if (commentsDom && data.ok === 1 && data.comments) {
-            commentsDom.innerHTML = renderComments(data.comments, false);
-        } else if (commentsDom) {
-            commentsDom.innerHTML = '<div class="empty-tip">加载失败</div>';
-        }
-    } catch(e) {
-        console.error(e);
-        const commentsDom = document.getElementById(`scheduleForumComments_${scheduleId}`);
-        if (commentsDom) {
-            commentsDom.innerHTML = '<div class="empty-tip">加载失败</div>';
-        }
-    }
-}
-
-async function createScheduleForumComment(scheduleId) {
-    if (!currentUser) {
-        alert("请先登录！");
-        openLogin();
-        return;
-    }
-    const content = document.getElementById(`scheduleForumComment_${scheduleId}`).value.trim();
-    if (!content) {
-        alert("请填写评论内容！");
-        return;
-    }
-    try {
-        const res = await fetch("/schedule_forum/create_comment", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({schedule_id: scheduleId, content: content})
-        });
-        const data = await res.json();
-        if (data.ok === 1) {
-            document.getElementById(`scheduleForumComment_${scheduleId}`).value = "";
-            loadScheduleForumComments(scheduleId);
-        } else {
-            alert(data.msg || "发表失败！");
-        }
-    } catch(e) {
-        console.error(e);
-        alert("请求出错，请查看控制台");
-    }
-}
-
-async function createScheduleForumReply(postId, scheduleId) {
-    if(!currentUser) {
-        alert("请先登录！");
-        openLogin();
-        return;
-    }
-    const replyInput = document.getElementById(`replyInput_${postId}`);
-    const content = replyInput.value.trim();
-    if(!content) {
-        alert("请填写回复内容！");
-        return;
-    }
-    try {
-        const res = await fetch("/schedule_forum/create_reply", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({post_id: postId, content: content})
-        });
-        const data = await res.json();
-        if(data.ok === 1) {
-            alert("回复成功！");
-            replyInput.value = "";
-            loadScheduleForumComments(scheduleId);
-        } else {
-            alert(data.msg || "回复失败！");
-        }
-    } catch(e) {
-        console.error(e);
-        alert("请求出错，请查看控制台");
-    }
 }
 
 let reservationListData = [];
@@ -2661,3 +2805,412 @@ function changeReservationPage(page) {
         renderReservationList();
     }
 }
+
+// ==================== 公告系统 ====================
+let announcementListData = [];
+
+function initAnnouncementSystem() {
+    const announcementBtn = document.getElementById('announcementBtn');
+    if (announcementBtn) {
+        announcementBtn.addEventListener('click', openAnnouncementModal);
+    }
+    
+    const announcementModal = document.getElementById('announcementModal');
+    if (announcementModal) {
+        announcementModal.addEventListener('click', function(e) {
+            if (e.target === announcementModal) {
+                closeAnnouncementModal();
+            }
+        });
+    }
+    
+    loadUnreadAnnouncements();
+    
+    if (currentUser) {
+        checkNewAnnouncements();
+    }
+}
+
+async function loadAnnouncements() {
+    try {
+        const res = await fetch('/api/announcements');
+        const data = await res.json();
+        if (data.ok === 1) {
+            announcementListData = data.announcements;
+            renderAnnouncementList();
+            updateAnnouncementBadge();
+        }
+    } catch(e) {
+        console.error("加载公告失败:", e);
+    }
+}
+
+async function loadUnreadAnnouncements() {
+    try {
+        const res = await fetch('/api/announcements/unread');
+        const data = await res.json();
+        if (data.ok === 1) {
+            const unreadCount = data.announcements.length;
+            updateAnnouncementBadge(unreadCount);
+        }
+    } catch(e) {
+        console.error("加载未读公告失败:", e);
+    }
+}
+
+function updateAnnouncementBadge(count) {
+    const badge = document.getElementById('announcementBadge');
+    if (badge) {
+        if (count > 0) {
+            badge.textContent = count;
+            badge.style.display = 'flex';
+        } else {
+            badge.style.display = 'none';
+        }
+    }
+}
+
+function openAnnouncementModal() {
+    const modal = document.getElementById('announcementModal');
+    if (modal) {
+        modal.style.display = 'flex';
+        loadAnnouncements();
+    }
+}
+
+function closeAnnouncementModal() {
+    const modal = document.getElementById('announcementModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+// 当前选中的公告
+let currentAnnouncementId = null;
+let currentAnnouncementTab = 'all';
+
+// 切换公告分类
+function switchAnnouncementTab(type) {
+    currentAnnouncementTab = type;
+    currentAnnouncementId = null;
+    
+    // 更新标签样式
+    document.querySelectorAll('.announcement-tab').forEach(tab => {
+        tab.classList.remove('active');
+        if (tab.dataset.type === type) {
+            tab.classList.add('active');
+        }
+    });
+    
+    // 重新渲染列表
+    renderAnnouncementList();
+    
+    // 清空详情
+    const detail = document.getElementById('announcementDetail');
+    if (detail) {
+        detail.innerHTML = `
+            <div class="announcement-detail-empty">
+                <div class="empty-icon">📋</div>
+                <div class="empty-text">请从左侧选择一条公告查看详情</div>
+            </div>
+        `;
+    }
+}
+
+// 渲染左侧列表
+function renderAnnouncementList() {
+    const container = document.getElementById('announcementListContainer');
+    if (!container) return;
+    
+    // 根据当前分类筛选
+    let filteredData = announcementListData;
+    if (currentAnnouncementTab !== 'all') {
+        filteredData = announcementListData.filter(item => item.type === currentAnnouncementTab);
+    }
+    
+    if (filteredData.length === 0) {
+        container.innerHTML = `
+            <div class="empty-announcement">
+                <div class="empty-icon">📭</div>
+                <p>暂无${currentAnnouncementTab === 'all' ? '公告' : currentAnnouncementTab === 'notice' ? '通知' : currentAnnouncementTab === 'activity' ? '活动' : '重要公告'}</p>
+            </div>
+        `;
+        return;
+    }
+    
+    container.innerHTML = filteredData.map(item => {
+        const typeText = item.type === 'important' ? '重要' : item.type === 'activity' ? '活动' : '通知';
+        const typeClass = item.type;
+        const activeClass = currentAnnouncementId === item.id ? 'active' : '';
+        const unreadClass = item.is_read ? '' : 'unread';
+        return `
+            <div class="announcement-list-item ${activeClass} ${unreadClass}" onclick="selectAnnouncement(${item.id})">
+                <div class="announcement-list-title">${item.title}</div>
+                <div class="announcement-list-meta">
+                    <span class="announcement-list-type ${typeClass}">${typeText}</span>
+                    <span>${item.created_at}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// 选择公告显示详情
+function selectAnnouncement(id) {
+    currentAnnouncementId = id;
+    const item = announcementListData.find(a => a.id === id);
+    if (!item) return;
+    
+    // 更新列表选中状态
+    renderAnnouncementList();
+    
+    // 标记已读
+    if (!item.is_read && currentUser) {
+        markAnnouncementRead(id);
+    }
+    
+    // 渲染详情
+    const detail = document.getElementById('announcementDetail');
+    if (!detail) return;
+    
+    const typeText = item.type === 'important' ? '重要公告' : item.type === 'activity' ? '活动公告' : '通知';
+    const typeClass = item.type;
+    const renderedContent = typeof marked !== 'undefined' ? marked.parse(item.content) : item.content;
+    const imageHtml = item.image_url ? `<img class="announcement-detail-image" src="${item.image_url}" alt="公告图片" onerror="this.style.display='none'">` : '';
+    
+    detail.innerHTML = `
+        <div class="announcement-detail-header">
+            <div class="announcement-detail-title">${item.title}</div>
+            <div class="announcement-detail-tags">
+                <span class="announcement-detail-type ${typeClass}">${typeText}</span>
+                <span class="announcement-detail-time">📅 ${item.created_at}</span>
+            </div>
+        </div>
+        ${imageHtml}
+        <div class="announcement-detail-content">${renderedContent}</div>
+        <div class="announcement-detail-actions">
+            <button onclick="markAnnouncementRead(${item.id})">✓ 标为已读</button>
+        </div>
+    `;
+}
+
+async function markAnnouncementRead(id) {
+    if (!currentUser) return;
+    
+    try {
+        await fetch('/api/announcements/read', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id })
+        });
+        
+        const item = announcementListData.find(a => a.id === id);
+        if (item) {
+            item.is_read = true;
+            renderAnnouncementList();
+            loadUnreadAnnouncements();
+        }
+    } catch(e) {
+        console.error("标记公告已读失败:", e);
+    }
+}
+
+async function markAllAnnouncementsRead() {
+    if (!currentUser) {
+        alert("请先登录！");
+        openLogin();
+        return;
+    }
+    
+    try {
+        const res = await fetch('/api/announcements/read/all', {
+            method: 'POST'
+        });
+        const data = await res.json();
+        if (data.ok === 1) {
+            announcementListData.forEach(item => item.is_read = true);
+            renderAnnouncementList();
+            updateAnnouncementBadge(0);
+            showToast("已全部标为已读");
+        }
+    } catch(e) {
+        console.error("标记全部已读失败:", e);
+    }
+}
+
+async function checkNewAnnouncements() {
+    try {
+        const res = await fetch('/api/announcements/unread');
+        const data = await res.json();
+        if (data.ok === 1 && data.announcements.length > 0) {
+            const lastAnnouncementId = localStorage.getItem('lastAnnouncementId');
+            const newAnnouncements = data.announcements.filter(a => a.id > (lastAnnouncementId || 0));
+            
+            if (newAnnouncements.length > 0) {
+                localStorage.setItem('lastAnnouncementId', data.announcements[0].id);
+                
+                if (!localStorage.getItem('hideAnnouncementModal')) {
+                    setTimeout(() => {
+                        openAnnouncementModal();
+                    }, 2000);
+                }
+            }
+        }
+    } catch(e) {
+        console.error("检查新公告失败:", e);
+    }
+}
+
+// ==================== 站内邮件系统 ====================
+let inboxListData = [];
+
+function initInboxSystem() {
+    const inboxBtn = document.getElementById('inboxBtn');
+    if (inboxBtn) {
+        inboxBtn.addEventListener('click', openInboxModal);
+    }
+    
+    const inboxModal = document.getElementById('inboxModal');
+    if (inboxModal) {
+        inboxModal.addEventListener('click', function(e) {
+            if (e.target === inboxModal) {
+                closeInboxModal();
+            }
+        });
+    }
+    
+    loadUnreadInboxCount();
+}
+
+async function loadInbox() {
+    if (!currentUser) return;
+    
+    try {
+        const res = await fetch('/api/inbox');
+        const data = await res.json();
+        if (data.ok === 1) {
+            inboxListData = data.inbox || [];
+            renderInboxList();
+            loadUnreadInboxCount();
+        }
+    } catch(e) {
+        console.error("加载邮件失败:", e);
+    }
+}
+
+async function loadUnreadInboxCount() {
+    if (!currentUser) return;
+    
+    try {
+        const res = await fetch('/api/inbox/unread_count');
+        const data = await res.json();
+        if (data.ok === 1) {
+            updateInboxBadge(data.count);
+        }
+    } catch(e) {
+        console.error("加载未读邮件数失败:", e);
+    }
+}
+
+function updateInboxBadge(count) {
+    const badge = document.getElementById('inboxBadge');
+    if (badge) {
+        if (count > 0) {
+            badge.textContent = count;
+            badge.style.display = 'flex';
+        } else {
+            badge.style.display = 'none';
+        }
+    }
+}
+
+function openInboxModal() {
+    if (!currentUser) {
+        alert("请先登录！");
+        openLogin();
+        return;
+    }
+    
+    const modal = document.getElementById('inboxModal');
+    if (modal) {
+        modal.style.display = 'flex';
+        loadInbox();
+    }
+}
+
+function closeInboxModal() {
+    const modal = document.getElementById('inboxModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+function renderInboxList() {
+    const container = document.getElementById('inboxList');
+    if (!container) return;
+    
+    if (inboxListData.length === 0) {
+        container.innerHTML = `
+            <div class="empty-announcement">
+                <div class="empty-icon">📭</div>
+                <p>暂无邮件</p>
+            </div>
+        `;
+        return;
+    }
+    
+    container.innerHTML = inboxListData.map(item => `
+        <div class="announcement-item ${item.read ? '' : 'unread'}">
+            <div class="announcement-title">${item.title}</div>
+            <div class="announcement-content">${item.content}</div>
+            <div class="announcement-time">${item.created_at}</div>
+        </div>
+    `).join('');
+}
+
+async function markAllInboxRead() {
+    if (!currentUser) return;
+    
+    try {
+        const res = await fetch('/api/inbox/read_all', {
+            method: 'POST'
+        });
+        const data = await res.json();
+        if (data.ok === 1) {
+            inboxListData.forEach(item => item.read = true);
+            renderInboxList();
+            updateInboxBadge(0);
+            showToast("已全部标为已读");
+        }
+    } catch(e) {
+        console.error("标记邮件已读失败:", e);
+    }
+}
+
+// 页面加载完成后初始化
+document.addEventListener('DOMContentLoaded', function() {
+    initAnnouncementSystem();
+    initInboxSystem();
+    initScheduleModalDrag();
+    
+    // 获取用户信息并更新导航栏
+    fetchUserNickname();
+    
+    // 点击遮罩关闭弹窗
+    const scheduleModal = document.getElementById('scheduleDetailModal');
+    if (scheduleModal) {
+        scheduleModal.addEventListener('click', function(e) {
+            if (e.target === scheduleModal) {
+                closeScheduleDetailModal();
+            }
+        });
+    }
+    
+    // ESC键关闭弹窗
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            closeScheduleDetailModal();
+            closeAnnouncementModal();
+        }
+    });
+});

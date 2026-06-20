@@ -91,11 +91,6 @@ def load_email_pool():
 
 EMAIL_POOL = load_email_pool()
 
-# ==================== 腾讯云内容审核 (TMS) 配置 ====================
-TENCENT_SECRET_ID = os.environ.get('TENCENT_SECRET_ID', '')
-TENCENT_SECRET_KEY = os.environ.get('TENCENT_SECRET_KEY', '')
-TMS_FREE_LIMIT = int(os.environ.get('TMS_FREE_LIMIT', '3000'))
-
 # ==================== 系统更新配置 ====================
 # 远程仓库地址（用于系统更新功能）
 REMOTE_REPO_URL = os.environ.get('REMOTE_REPO_URL', 'https://github.com/WEIWU-001/MC-Schedule.git')

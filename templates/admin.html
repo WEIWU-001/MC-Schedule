@@ -200,6 +200,10 @@
             <span class="nav-icon">🔗</span> 友链管理
         </div>
         
+        <div class="nav-item" data-section="announcements" onclick="showSection('announcements')">
+            <span class="nav-icon">🔔</span> 公告管理
+        </div>
+        
         <div class="nav-item" data-section="feedback" onclick="showSection('feedback')">
             <span class="nav-icon">💡</span> 用户反馈
         </div>
@@ -606,11 +610,11 @@
                     <label>网站标题：</label>
                     <input type="text" id="siteTitleInput" placeholder="请输入网站标题">
                     
-                    <label>网站公告：</label>
-                    <input type="text" id="siteAnnouncementInput" placeholder="请输入网站公告">
-                    
                     <label>页脚信息：</label>
                     <input type="text" id="footerTextInput" placeholder="请输入页脚信息">
+                    
+                    <label>网站运行起始时间：</label>
+                    <input type="datetime-local" id="siteStartTimeInput" placeholder="请选择网站运行起始时间">
                     
                     <div class="config-btns">
                         <button onclick="saveSiteConfig()">保存设置</button>
@@ -818,6 +822,32 @@
                 </table>
             </div>
             
+            <!-- 公告管理 -->
+            <div class="section" id="section-announcements">
+                <div class="list-title">公告管理</div>
+                <p class="tip">管理网站公告，支持发布、编辑、删除公告，设置优先级和类型</p>
+                
+                <div class="keyword-controls">
+                    <button class="keyword-add" onclick="openAnnouncementModal()">+ 发布公告</button>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>标题</th>
+                            <th>类型</th>
+                            <th>优先级</th>
+                            <th>状态</th>
+                            <th>创建时间</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="announcementsTableBody">
+                        <tr><td colspan="7" style="text-align:center">加载中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            
             <!-- 安全管理 -->
             <div class="section" id="section-security">
                 <!-- 操作日志 -->
@@ -982,6 +1012,44 @@
             <div class="modal-btns">
                 <button class="modal-btn-cancel" onclick="closeFriendLinkModal()">取消</button>
                 <button class="modal-btn-ok" onclick="confirmSaveFriendLink()">保存</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 公告编辑模态框 -->
+    <div class="modal" id="announcementModal">
+        <div class="modal-content" style="max-width:600px;">
+            <button class="modal-close-btn" onclick="closeAnnouncementModal()">&times;</button>
+            <div class="modal-title" id="announcementModalTitle">发布公告</div>
+            <div style="display: flex; flex-direction: column; gap:12px;">
+                <input type="hidden" id="announcementId">
+                <input type="text" class="modal-input" id="announcementTitle" placeholder="公告标题">
+                <textarea class="modal-input" id="announcementContent" placeholder="公告内容（支持Markdown格式）" rows="8"></textarea>
+                <input type="url" class="modal-input" id="announcementImageUrl" placeholder="封面图片URL（可选）">
+                <div style="background:#2a2a2a;border-radius:6px;padding:10px;color:#888;font-size:12px;">
+                    <div style="margin-bottom:6px;">💡 Markdown格式提示：</div>
+                    <div style="line-height:1.6;">
+                        • **粗体** → <b>粗体</b><br>
+                        • *斜体* → <i>斜体</i><br>
+                        • # 标题 → 大标题<br>
+                        • - 列表项 → 列表<br>
+                        • [链接](url) → 超链接<br>
+                        • ![图片](url) → 内嵌图片
+                    </div>
+                </div>
+                <select class="modal-input" id="announcementType">
+                    <option value="notice">通知</option>
+                    <option value="important">重要公告</option>
+                    <option value="activity">活动公告</option>
+                </select>
+                <input type="number" class="modal-input" id="announcementPriority" placeholder="优先级（数字越大越靠前）" value="0">
+                <label style="color:#888;font-size:12px;">
+                    <input type="checkbox" id="announcementEnabled" checked> 启用该公告
+                </label>
+            </div>
+            <div class="modal-btns">
+                <button class="modal-btn-cancel" onclick="closeAnnouncementModal()">取消</button>
+                <button class="modal-btn-ok" onclick="confirmSaveAnnouncement()">保存</button>
             </div>
         </div>
     </div>
@@ -1238,6 +1306,7 @@
             'mcserver': 'MC服务器查询',
             'tags': '标签管理',
             'friendLinks': '友链管理',
+            'announcements': '公告管理',
             'feedback': '用户反馈',
             'security': '安全管理',
             'data': '数据管理',
@@ -1649,14 +1718,18 @@
         }
         
         async function doUpdate(){
-            if(!confirm("确定要执行更新吗？更新过程中网站可能暂时不可用，更新完成后需要重启服务器。")){
+            if(!confirm("确定要执行更新吗？\n\n更新流程：\n1. 先尝试 git pull\n2. 如果失败，自动下载 ZIP 包\n3. 如果都失败，需要手动上传\n\n更新完成后需要重启服务器。")){
                 return;
             }
             
             const btn = document.getElementById("modalUpdateBtn");
             const originalText = btn.innerText;
-            btn.innerText = "⏳ 更新中...";
+            btn.innerText = "⏳ 更新中（尝试git）...";
             btn.disabled = true;
+            
+            const resultDiv = document.getElementById("modalUpdateResult");
+            resultDiv.innerText = "正在尝试 git pull 更新...";
+            resultDiv.style.color = "#42C9D8";
             
             try{
                 const selectedSource = document.querySelector('input[name="updateSource"]:checked');
@@ -1672,11 +1745,18 @@
                 });
                 const data = await res.json();
                 
-                const resultDiv = document.getElementById("modalUpdateResult");
-                
                 if(data.ok === 1){
-                    resultDiv.innerText = data.msg;
+                    // 显示更新方式
+                    const methodNames = {
+                        'git': 'Git拉取',
+                        'zip_download': 'ZIP自动下载',
+                        'zip_upload': 'ZIP手动上传'
+                    };
+                    const methodName = methodNames[data.update_method] || data.update_method || '未知';
+                    
+                    resultDiv.innerHTML = `✅ ${data.msg}<br><small style="color:#888">更新方式: ${methodName} | 更新源: ${data.used_source || '自动'} | 文件数: ${data.updated_files || 0}</small>`;
                     resultDiv.style.color = "#2ECC71";
+                    
                     document.getElementById("versionInfo").innerText = `v${data.new_version}`;
                     document.getElementById("updateBadge").style.display = "none";
                     
@@ -1689,13 +1769,28 @@
                     const li = document.createElement("li");
                     li.style.color = "#2ECC71";
                     li.style.fontSize = "12px";
-                    li.innerText = "✓ 更新成功！请重启服务器以应用更改。";
+                    li.innerText = `✓ 更新成功！方式: ${methodName}，请重启服务器。`;
                     logList.appendChild(li);
                     
                     btn.style.display = "none";
                 } else {
-                    resultDiv.innerText = data.msg || "更新失败";
+                    // 显示失败信息，提示手动上传
+                    resultDiv.innerHTML = `❌ ${data.msg}`;
                     resultDiv.style.color = "#E74C3C";
+                    
+                    // 如果需要手动上传，显示提示
+                    if(data.need_manual_upload){
+                        const uploadHint = document.createElement("div");
+                        uploadHint.style.marginTop = "10px";
+                        uploadHint.style.padding = "10px";
+                        uploadHint.style.background = "#2a2a4a";
+                        uploadHint.style.borderRadius = "4px";
+                        uploadHint.style.borderLeft = "3px solid #F39C12";
+                        uploadHint.innerHTML = `<strong style="color:#F39C12">💡 建议：</strong><br>
+                            <small style="color:#ccc">1. 配置代理: HTTP_PROXY=http://127.0.0.1:7890</small><br>
+                            <small style="color:#ccc">2. 使用下方"📦 上传更新包"功能手动更新</small>`;
+                        resultDiv.appendChild(uploadHint);
+                    }
                 }
             } catch(e){
                 console.error("更新失败:", e);
@@ -1885,6 +1980,10 @@
             // 切换到反馈页面时加载反馈列表
             if(sectionId === 'feedback'){
                 loadFeedbackList();
+            }
+            // 切换到公告页面时加载公告列表
+            if(sectionId === 'announcements'){
+                loadAnnouncements();
             }
             // 切换到设置页面时加载维护模式状态
             if(sectionId === 'settings'){
@@ -2553,8 +2652,9 @@
                 const data = await res.json();
                 if(data.ok === 1 && data.configs){
                     document.getElementById("siteTitleInput").value = data.configs["site_title"] || "";
-                    document.getElementById("siteAnnouncementInput").value = data.configs["site_announcement"] || "";
                     document.getElementById("footerTextInput").value = data.configs["footer_text"] || "";
+                    const startTime = data.configs["site_start_time"] || "";
+                    document.getElementById("siteStartTimeInput").value = startTime ? startTime.replace(" ", "T") : "";
                     
                     // 加载注册人数统计开关状态
                     const showUserCount = data.configs["show_user_count"] === "1";
@@ -2583,8 +2683,8 @@
         
         async function saveSiteConfig(){
             const siteTitle = document.getElementById("siteTitleInput").value.trim();
-            const siteAnnouncement = document.getElementById("siteAnnouncementInput").value.trim();
             const footerText = document.getElementById("footerTextInput").value.trim();
+            const siteStartTime = document.getElementById("siteStartTimeInput").value.trim();
             
             if(!siteTitle){
                 document.getElementById("siteConfigResult").style.color = "#ff6b6b";
@@ -2600,19 +2700,22 @@
                     body:JSON.stringify({key: "site_title", value: siteTitle})
                 });
                 
-                // 保存公告
-                await fetch("/admin/set_system_config",{
-                    method:"POST",
-                    headers:{"Content-Type":"application/json"},
-                    body:JSON.stringify({key: "site_announcement", value: siteAnnouncement})
-                });
-                
                 // 保存页脚
                 await fetch("/admin/set_system_config",{
                     method:"POST",
                     headers:{"Content-Type":"application/json"},
                     body:JSON.stringify({key: "footer_text", value: footerText})
                 });
+                
+                // 保存网站起始时间
+                if(siteStartTime){
+                    const formattedTime = siteStartTime.replace("T", " ");
+                    await fetch("/admin/set_system_config",{
+                        method:"POST",
+                        headers:{"Content-Type":"application/json"},
+                        body:JSON.stringify({key: "site_start_time", value: formattedTime})
+                    });
+                }
                 
                 document.getElementById("siteConfigResult").style.color = "#2ECC71";
                 document.getElementById("siteConfigResult").textContent = "保存成功！前台将实时更新显示";
@@ -3912,6 +4015,132 @@
                 if (data.ok === 1) {
                     alert(data.msg);
                     loadFriendLinks();
+                } else {
+                    alert(data.msg);
+                }
+            } catch(e) {
+                alert("操作失败：" + e.message);
+            }
+        }
+        
+        // ==================== 公告管理相关函数 ====================
+        
+        async function loadAnnouncements() {
+            try {
+                const res = await fetch("/api/admin/announcements");
+                const data = await res.json();
+                
+                if (data.ok === 1) {
+                    const tbody = document.getElementById("announcementsTableBody");
+                    tbody.innerHTML = data.announcements.map(item => `
+                        <tr>
+                            <td>${item.id}</td>
+                            <td>${escapeHtml(item.title)}</td>
+                            <td>${item.type === 'important' ? '<span style="color:#e74c3c">重要公告</span>' : item.type === 'activity' ? '<span style="color:#9b59b6">活动公告</span>' : '通知'}</td>
+                            <td>${item.priority}</td>
+                            <td>${item.enabled === 1 ? '<span style="color:#2ECC71">启用</span>' : '<span style="color:#e74c3c">禁用</span>'}</td>
+                            <td>${item.created_at}</td>
+                            <td>
+                                <button onclick="editAnnouncement(${item.id})" style="background:#3498db;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;">编辑</button>
+                                <button onclick="deleteAnnouncement(${item.id})" style="background:#e74c3c;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;margin-left:5px;">删除</button>
+                            </td>
+                        </tr>
+                    `).join('');
+                } else {
+                    document.getElementById("announcementsTableBody").innerHTML = '<tr><td colspan="7" style="text-align:center">加载失败</td></tr>';
+                }
+            } catch(e) {
+                console.error("加载公告失败:", e);
+                document.getElementById("announcementsTableBody").innerHTML = '<tr><td colspan="7" style="text-align:center">加载失败</td></tr>';
+            }
+        }
+        
+        function openAnnouncementModal() {
+            document.getElementById("announcementModalTitle").innerText = "发布公告";
+            document.getElementById("announcementId").value = "";
+            document.getElementById("announcementTitle").value = "";
+            document.getElementById("announcementContent").value = "";
+            document.getElementById("announcementImageUrl").value = "";
+            document.getElementById("announcementType").value = "notice";
+            document.getElementById("announcementPriority").value = "0";
+            document.getElementById("announcementEnabled").checked = true;
+            document.getElementById("announcementModal").style.display = "flex";
+        }
+        
+        async function editAnnouncement(id) {
+            try {
+                const res = await fetch("/api/admin/announcements");
+                const data = await res.json();
+                
+                if (data.ok === 1) {
+                    const item = data.announcements.find(a => a.id === id);
+                    if (item) {
+                        document.getElementById("announcementModalTitle").innerText = "编辑公告";
+                        document.getElementById("announcementId").value = item.id;
+                        document.getElementById("announcementTitle").value = item.title;
+                        document.getElementById("announcementContent").value = item.content;
+                        document.getElementById("announcementImageUrl").value = item.image_url || "";
+                        document.getElementById("announcementType").value = item.type;
+                        document.getElementById("announcementPriority").value = item.priority;
+                        document.getElementById("announcementEnabled").checked = item.enabled === 1;
+                        document.getElementById("announcementModal").style.display = "flex";
+                    }
+                }
+            } catch(e) {
+                console.error("获取公告失败:", e);
+            }
+        }
+        
+        function closeAnnouncementModal() {
+            document.getElementById("announcementModal").style.display = "none";
+        }
+        
+        async function confirmSaveAnnouncement() {
+            const id = document.getElementById("announcementId").value;
+            const title = document.getElementById("announcementTitle").value.trim();
+            const content = document.getElementById("announcementContent").value.trim();
+            const image_url = document.getElementById("announcementImageUrl").value.trim();
+            const type = document.getElementById("announcementType").value;
+            const priority = parseInt(document.getElementById("announcementPriority").value) || 0;
+            const enabled = document.getElementById("announcementEnabled").checked ? 1 : 0;
+            
+            if (!title || !content) {
+                alert("标题和内容不能为空！");
+                return;
+            }
+            
+            try {
+                const res = await fetch(id ? `/api/admin/announcements/${id}` : "/api/admin/announcements", {
+                    method: id ? "PUT" : "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({title, content, image_url, type, priority, enabled})
+                });
+                const data = await res.json();
+                
+                if (data.ok === 1) {
+                    alert(data.msg);
+                    closeAnnouncementModal();
+                    loadAnnouncements();
+                } else {
+                    alert(data.msg);
+                }
+            } catch(e) {
+                alert("操作失败：" + e.message);
+            }
+        }
+        
+        async function deleteAnnouncement(id) {
+            if (!confirm("确定删除该公告吗？")) return;
+            
+            try {
+                const res = await fetch(`/api/admin/announcements/${id}`, {
+                    method: "DELETE"
+                });
+                const data = await res.json();
+                
+                if (data.ok === 1) {
+                    alert(data.msg);
+                    loadAnnouncements();
                 } else {
                     alert(data.msg);
                 }
