@@ -293,10 +293,9 @@ function renderNav(){
                     <div class="user-dropdown-item" onclick="window.location.href='/settings';closeUserDropdown()">
                         ⚙️ 个人设置
                     </div>
-                    <!-- 背景设置（已隐藏，功能开发中）
                     <div class="user-dropdown-item" onclick="openBgSettings();closeUserDropdown()">
                         🎨 背景设置
-                    </div> -->
+                    </div>
                     <div class="user-dropdown-divider"></div>
                     <div class="user-dropdown-item" onclick="logout()">
                         🚪 退出登录

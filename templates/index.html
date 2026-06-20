@@ -9,8 +9,8 @@
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
-<!-- 背景图片层（已隐藏，功能开发中） -->
-<div id="bg-image-layer" style="display:none;"></div>
+<!-- 背景图片层 -->
+<div id="bg-image-layer"></div>
 <!-- 浮动粒子背景 -->
 <div class="floating-particles" id="particles"></div>
 <!-- 顶部导航 -->
@@ -692,10 +692,10 @@
         <h3>🎨 界面设置</h3>
         <div class="msg" id="bgSettingsMsg"></div>
         <div style="background:#1a1a2e;border-radius:8px;padding:15px;margin:15px 0;">
-            <!-- 背景图片设置（已隐藏，功能开发中） -->
-            <div style="display:none;">
+            <!-- 背景图片设置 -->
+            <div>
                 <div style="color:#4fc3f7;font-size:13px;margin-bottom:8px;">🖼️ 背景图片</div>
-                <input type="text" id="bgUrlInput" placeholder="粘贴图片URL地址" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d1a;color:#fff;font-size:13px;box-sizing:border-box;">
+                <input type="text" id="bgUrlInput" placeholder="粘贴图片URL地址或选择预设背景" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d1a;color:#fff;font-size:13px;box-sizing:border-box;">
                 <div id="bgPreview" style="max-height:120px;display:none;overflow:hidden;border-radius:6px;border:1px solid #333;margin:10px 0;">
                     <img id="bgPreviewImg" style="width:100%;height:auto;" />
                 </div>
@@ -705,16 +705,7 @@
                     <button onclick="clearLocalBg()" style="flex:1;padding:6px;font-size:12px;border-radius:6px;border:none;background:#666;color:#fff;cursor:pointer;">恢复默认</button>
                 </div>
             </div>
-            <!-- 推荐图库（已隐藏，功能开发中） -->
-            <div style="display:none;">
-                <div style="color:#4fc3f7;font-size:13px;margin-bottom:8px;">📚 推荐图库</div>
-                <div style="display:flex;flex-wrap:wrap;gap:6px;">
-                    <a href="https://wallhaven.cc/search?q=anime&categories=010&purity=100" target="_blank" style="padding:4px 10px;background:#1a1a2e;border-radius:4px;color:#4fc3f7;font-size:12px;text-decoration:none;border:1px solid #333;">🌸 Wallhaven</a>
-                    <a href="https://anime-pictures.net/" target="_blank" style="padding:4px 10px;background:#1a1a2e;border-radius:4px;color:#4fc3f7;font-size:12px;text-decoration:none;border:1px solid #333;">🎨 Anime-Pictures</a>
-                    <a href="https://pixabay.com/zh/images/search/anime/" target="_blank" style="padding:4px 10px;background:#1a1a2e;border-radius:4px;color:#4fc3f7;font-size:12px;text-decoration:none;border:1px solid #333;">📷 Pixabay</a>
-                </div>
-            </div>
-            <div style="border-top:1px solid #333;padding-top:15px;margin-bottom:18px;">
+            <div style="border-top:1px solid #333;padding-top:15px;margin-top:15px;margin-bottom:18px;">
                 <div style="color:#4fc3f7;font-size:13px;margin-bottom:8px;">🌗 主题模式</div>
                 <div style="display:flex;gap:8px;">
                     <button onclick="setTheme('dark')" id="themeDarkBtn" style="flex:1;padding:6px;font-size:12px;border-radius:6px;border:none;background:#3498db;color:#fff;cursor:pointer;">🌙 暗色</button>
