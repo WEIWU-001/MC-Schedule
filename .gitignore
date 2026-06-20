@@ -17,6 +17,7 @@ database.db
 # 日志文件
 logs/
 *.log
+*.zip
 
 # 环境变量
 .env
