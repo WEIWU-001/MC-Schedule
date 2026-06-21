@@ -8977,8 +8977,9 @@ def do_update():
         
         updater = get_updater_from_app(app)
         source_id = request.form.get('source_id', '')
+        target_version = request.form.get('target_version', '')
         
-        result = updater.do_update(source_id=source_id)
+        result = updater.do_update(source_id=source_id, target_version=target_version if target_version else None)
         
         if result.success:
             method_names = {
@@ -9095,6 +9096,53 @@ def test_update_sources():
         logger.error(f"测试更新源速度失败: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({'ok': 0, 'msg': f'测试失败: {str(e)}'})
+
+
+# 获取版本列表
+@app.route('/admin/get_releases', methods=['POST'])
+def get_releases():
+    uid = session.get('user')
+    if not uid:
+        return jsonify({'ok': 0, 'msg': '请先登录'})
+    
+    role = get_user_role(uid)
+    if role < ROLE_SUPER_ADMIN:
+        return jsonify({'ok': 0, 'msg': '权限不足（仅最高管理员可用）'})
+    
+    try:
+        from updater import get_updater_from_app
+        
+        updater = get_updater_from_app(app)
+        source_id = request.form.get('source_id', 'auto')
+        include_prerelease = request.form.get('include_prerelease', 'false').lower() == 'true'
+        
+        success, releases = updater.get_releases(source_id=source_id, prerelease=include_prerelease)
+        
+        if not success:
+            return jsonify({'ok': 0, 'msg': releases})
+        
+        releases_list = [{
+            'tag_name': r.tag_name,
+            'name': r.name,
+            'body': r.body,
+            'published_at': r.published_at,
+            'prerelease': r.prerelease,
+            'html_url': r.html_url,
+            'current': r.tag_name == updater.current_version
+        } for r in releases]
+        
+        return jsonify({
+            'ok': 1,
+            'releases': releases_list,
+            'current_version': updater.current_version,
+            'total': len(releases_list)
+        })
+    except Exception as e:
+        import traceback
+        logger.error(f"获取版本列表失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({'ok': 0, 'msg': f'获取版本列表失败: {str(e)}'})
+
 
 # 获取统计数据
 @app.route('/admin/data/stats', methods=['POST'])
