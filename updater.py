@@ -82,7 +82,7 @@ class Updater:
         self,
         project_root: str,
         remote_repo_url: str = 'https://github.com/WEIWU-001/MC-Schedule.git',
-        default_branch: str = 'main',
+        default_branch: str = 'master',
         update_sources: Optional[List[UpdateSource]] = None,
         http_proxy: str = '',
         https_proxy: str = '',
@@ -277,13 +277,16 @@ class Updater:
             else:
                 repo_url = self.remote_repo_url
         elif source.type == 'mirror' and source.url:
-            repo_url = self.remote_repo_url.replace('https://github.com', source.url)
+            repo_path = self.remote_repo_url.replace('https://github.com/', '')
+            repo_url = source.url.rstrip('/') + '/' + repo_path
         else:
             return False, None
         
         # 设置远程仓库
         self._run_git_command(['remote', 'rm', 'origin'])
         _, _, _ = self._run_git_command(['remote', 'add', 'origin', repo_url])
+        
+        logger.info(f'尝试从 {source.name} 获取远程版本，URL: {repo_url}, 分支: {branch}')
         
         for attempt in range(self.max_retries):
             result = self._run_git_command_with_thread(
@@ -295,7 +298,10 @@ class Updater:
                 lines = result['stdout'].strip().split('\n')
                 if lines and lines[0]:
                     remote_commit = lines[0].split()[0]
+                    logger.info(f'从 {source.name} 获取到远程commit: {remote_commit[:7]}')
                     return True, remote_commit
+            else:
+                logger.warning(f'从 {source.name} 获取失败(尝试 {attempt+1}/{self.max_retries}): returncode={result["returncode"]}, stderr={result["stderr"][:100]}')
             
             if attempt < self.max_retries - 1:
                 time.sleep(1)
@@ -304,8 +310,10 @@ class Updater:
         logger.info(f'git ls-remote {source.name} 失败，尝试 API 方式')
         api_commit = self._fetch_via_api(source, branch)
         if api_commit:
+            logger.info(f'通过 API 从 {source.name} 获取到远程commit: {api_commit[:7]}')
             return True, api_commit
         
+        logger.error(f'从 {source.name} 获取远程版本失败')
         return False, None
     
     def check_update(self, source_id: str = '') -> VersionInfo:
