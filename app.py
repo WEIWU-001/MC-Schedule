@@ -2428,10 +2428,12 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = 3600 * 24  # 24小时
 
-# 生产环境强制 HTTPS
+# 生产环境强制 HTTPS（但不设置域名，让浏览器自动处理）
 if app.config.get('PRODUCTION_MODE', False):
+    # 注意：SESSION_COOKIE_SECURE=True 要求必须使用 HTTPS
+    # 如果通过 HTTP 访问，session 将无法工作
     app.config['SESSION_COOKIE_SECURE'] = True
-    app.config['SESSION_COOKIE_DOMAIN'] = app.config.get('SITE_DOMAIN', None)
+    # 不设置 SESSION_COOKIE_DOMAIN，让浏览器自动根据访问域名设置
 else:
     app.config['SESSION_COOKIE_SECURE'] = False  # 开发环境不需要 HTTPS
 
