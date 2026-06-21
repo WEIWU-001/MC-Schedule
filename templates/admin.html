@@ -1172,10 +1172,6 @@
                         <span style="color:#888;font-size:13px;">最新版本：</span>
                         <span style="color:#2ECC71;font-weight:bold;font-size:14px;" id="modalLatestVersion">-</span>
                     </div>
-                    <div>
-                        <span style="color:#888;font-size:13px;">分支：</span>
-                        <span style="color:#9B59B6;font-weight:bold;font-size:14px;" id="modalCurrentBranch">-</span>
-                    </div>
                 </div>
                 
                 <div>
@@ -1533,8 +1529,7 @@
             
             // 先打开模态框，显示加载状态
             document.getElementById("modalCurrentVersion").innerText = "--";
-            document.getElementById("modalLatestVersion").innerText = "⏳ 检查中...";
-            document.getElementById("modalCurrentBranch").innerText = "--";
+            document.getElementById("modalLatestVersion").innerText = "--";
             const logList = document.getElementById("modalUpdateLogList");
             logList.innerHTML = "";
             const loadingLi = document.createElement("li");
@@ -1570,7 +1565,6 @@
                     // 更新模态框内容
                     document.getElementById("modalCurrentVersion").innerText = updateData.current_version;
                     document.getElementById("modalLatestVersion").innerText = updateData.latest_version;
-                    document.getElementById("modalCurrentBranch").innerText = updateData.current_branch;
                     
                     // 更新更新日志
                     logList.innerHTML = "";
@@ -1623,7 +1617,6 @@
         function openUpdateModal(updateData){
             document.getElementById("modalCurrentVersion").innerText = updateData.current_version;
             document.getElementById("modalLatestVersion").innerText = updateData.latest_version;
-            document.getElementById("modalCurrentBranch").innerText = updateData.current_branch;
             
             // 更新更新日志
             const logList = document.getElementById("modalUpdateLogList");
