@@ -5368,22 +5368,22 @@ from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 
 def generate_captcha():
-    width, height = 120, 40
+    width, height = 150, 50
     image = Image.new('RGB', (width, height), (255, 255, 255))
     draw = ImageDraw.Draw(image)
     
     chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
     captcha_text = ''.join(random.choice(chars) for _ in range(4))
     
-    font_size = 24
+    font_size = 32
     try:
         font = ImageFont.truetype('arial.ttf', font_size)
     except:
         font = ImageFont.load_default()
     
     for i, char in enumerate(captcha_text):
-        x = 15 + i * 25
-        y = random.randint(5, height - 30)
+        x = 15 + i * 32
+        y = random.randint(5, height - 40)
         draw.text((x, y), char, font=font, fill=(random.randint(0, 150), random.randint(0, 150), random.randint(0, 150)))
     
     for _ in range(20):
