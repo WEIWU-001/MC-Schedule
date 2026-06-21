@@ -5586,8 +5586,7 @@ def register():
 
         uid = generate_uid(conn)
         user_id = str(uid)
-        import datetime
-        reg_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+        reg_time = datetime.now().strftime('%Y-%m-%d %H:%M')
         
         hashed_password = bcrypt.hashpw(pwd.encode(), bcrypt.gensalt()).decode()
         c.execute("INSERT INTO users (id, uid, nickname, pwd, email, verified, reg_time) VALUES (?, ?, ?, ?, ?, 1, ?)", 
