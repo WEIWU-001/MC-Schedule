@@ -473,7 +473,7 @@ class Updater:
         try:
             # 构建ZIP下载URL
             if source.id == 'gitee' or 'gitee.com' in self.remote_repo_url:
-                zip_url = f'https://gitee.com/weiwu001/MC-Schedule/repository/archive/{self.default_branch}.zip'
+                zip_url = f'https://gitee.com/weiwu001/MC-Schedule/archive/{self.default_branch}.zip'
             else:
                 zip_url = f'https://github.com/WEIWU-001/MC-Schedule/archive/refs/heads/{self.default_branch}.zip'
             
