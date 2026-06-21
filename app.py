@@ -2419,6 +2419,10 @@ app.config.from_pyfile('config.py')
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
+# 反向代理支持（Nginx等）
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+
 # Session安全配置
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
@@ -2533,6 +2537,9 @@ def csrf_protect():
         
         # 验证 token
         if not cookie_token or not session_token:
+            # 检查是否因为 HTTP 环境下开启了生产模式导致 session 无法工作
+            if app.config.get('SESSION_COOKIE_SECURE') and not request.is_secure:
+                return jsonify({'ok': 0, 'msg': '生产模式需要HTTPS，请在后台关闭生产模式或配置SSL证书'}), 400
             return jsonify({'ok': 0, 'msg': 'CSRF验证失败，请刷新页面后重试'}), 400
         
         # cookie token 和 header token 至少有一个匹配 session token
@@ -6927,6 +6934,14 @@ def admin_set_production_mode():
     production_file = '.production_mode'
     
     if enabled:
+        # 检查是否使用 HTTPS
+        is_https = request.is_secure or request.headers.get('X-Forwarded-Proto') == 'https'
+        if not is_https:
+            return jsonify({
+                'ok': 0, 
+                'msg': '⚠️ 生产模式需要HTTPS！请先配置SSL证书，否则登录等功能将无法正常工作。',
+                'https_required': True
+            })
         with open(production_file, 'w') as f:
             f.write('true')
         return jsonify({
