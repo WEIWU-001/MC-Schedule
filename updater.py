@@ -63,8 +63,8 @@ class SourceStatus:
 class Updater:
     """更新器核心类 - 使用 Releases API"""
     
-    EXCLUDE_DIRS = {'logs', 'database.db', '__pycache__', '.git', 'node_modules', 'update_temp', '.venv', 'venv', 'env'}
-    EXCLUDE_FILES = {'.env', '.production_mode', '.secret_key', '.env.example'}
+    EXCLUDE_DIRS = {'logs', '__pycache__', '.git', 'node_modules', 'update_temp', '.venv', 'venv', 'env', 'backups'}
+    EXCLUDE_FILES = {'.env', '.production_mode', '.secret_key', '.env.example', 'database.db'}
     
     GITHUB_API_LATEST = "https://api.github.com/repos/WEIWU-001/MC-Schedule/releases/latest"
     GITEE_API_LATEST = "https://gitee.com/api/v5/repos/weiwu001/MC-Schedule/releases/latest"
@@ -127,7 +127,17 @@ class Updater:
     def _compare_versions(self, v1: str, v2: str) -> int:
         def parse(v):
             parts = v.lstrip('v').split('.')
-            return [int(p) for p in parts] if len(parts) == 3 else [0, 0, 0]
+            # 支持 1-4 位版本号，不足的补 0
+            nums = []
+            for p in parts[:4]:
+                try:
+                    nums.append(int(p))
+                except ValueError:
+                    break
+            # 补零到至少 3 位
+            while len(nums) < 3:
+                nums.append(0)
+            return nums
         
         p1, p2 = parse(v1), parse(v2)
         if p1 < p2:
@@ -166,50 +176,42 @@ class Updater:
         return results
     
     def check_update(self, source_id: str = 'auto') -> VersionInfo:
-        update_log = []
-        latest_version = None
-        used_source = None
-        release_url = None
+        """检查更新 - 使用版本列表获取真正的最新版本"""
+        # 获取版本列表（不包含预发布版本）
+        success, releases = self.get_releases(source_id=source_id, prerelease=False)
         
-        if source_id == 'gitee':
-            sources = [('gitee', self.GITEE_API_LATEST)]
-        elif source_id == 'github':
-            sources = [('github', self.GITHUB_API_LATEST)]
-        else:
-            sources = [('gitee', self.GITEE_API_LATEST), ('github', self.GITHUB_API_LATEST)]
-        
-        for source_name, api_url in sources:
-            logger.info(f'尝试从 {source_name} 检查更新...')
-            success, data = self._fetch_url(api_url)
-            
-            if success:
-                try:
-                    release_info = json.loads(data)
-                    latest_version = release_info.get('tag_name', '')
-                    
-                    body = release_info.get('body', '')
-                    if body:
-                        update_log = [line.strip() for line in body.split('\n') if line.strip()][:10]
-                    
-                    release_url = release_info.get('html_url', '')
-                    used_source = source_name
-                    logger.info(f'从 {source_name} 获取到最新版本: {latest_version}')
-                    break
-                except json.JSONDecodeError:
-                    logger.warning(f'{source_name} 返回数据解析失败')
-                    continue
-            else:
-                logger.warning(f'{source_name} 检查失败: {data}')
-                update_log.append(f'{source_name} 检查失败: {data}')
-        
-        if not latest_version:
+        if not success:
             return VersionInfo(
                 current_version=self.current_version,
                 latest_version='获取失败',
                 has_update=False,
-                update_log=['无法获取远程版本信息'],
+                update_log=[f'获取版本列表失败: {releases}'],
                 used_source=None
             )
+        
+        if not releases:
+            return VersionInfo(
+                current_version=self.current_version,
+                latest_version='无可用版本',
+                has_update=False,
+                update_log=['未找到可用版本'],
+                used_source=None
+            )
+        
+        # 按版本号排序，找出最新版本
+        sorted_releases = sorted(
+            releases,
+            key=lambda r: self._version_key(r.tag_name),
+            reverse=True
+        )
+        
+        latest = sorted_releases[0]
+        latest_version = latest.tag_name
+        
+        # 构建更新日志
+        update_log = []
+        if latest.body:
+            update_log = [line.strip() for line in latest.body.split('\n') if line.strip()][:10]
         
         has_update = self._compare_versions(self.current_version, latest_version) < 0
         
@@ -218,9 +220,22 @@ class Updater:
             latest_version=latest_version,
             has_update=has_update,
             update_log=update_log,
-            used_source=used_source,
-            release_url=release_url
+            used_source=source_id if source_id != 'auto' else 'releases',
+            release_url=latest.html_url
         )
+    
+    def _version_key(self, version: str) -> tuple:
+        """版本号排序键"""
+        parts = version.lstrip('v').split('.')
+        nums = []
+        for p in parts[:4]:
+            try:
+                nums.append(int(p))
+            except ValueError:
+                nums.append(0)
+        while len(nums) < 3:
+            nums.append(0)
+        return tuple(nums)
     
     def get_releases(self, source_id: str = 'auto', prerelease: bool = False) -> tuple:
         """
@@ -253,14 +268,25 @@ class Updater:
                         if not prerelease and r.get('prerelease', False):
                             continue
                         
+                        # Gitee 使用 created_at，GitHub 使用 published_at
+                        published_at = r.get('published_at', '') or r.get('created_at', '')
+                        # 统一 zipball_url（Gitee 可能用不同的字段名）
+                        zipball = r.get('zipball_url', '') or r.get('tarball_url', '')
+                        if not zipball and 'tag_name' in r:
+                            # 手动构造 zipball URL
+                            if 'gitee' in api_url:
+                                zipball = f"https://gitee.com/weiwu001/MC-Schedule/archive/{r['tag_name']}.zip"
+                            else:
+                                zipball = f"https://github.com/WEIWU-001/MC-Schedule/archive/refs/tags/{r['tag_name']}.zip"
+                        
                         releases.append(Release(
                             tag_name=r.get('tag_name', ''),
                             name=r.get('name', ''),
                             body=r.get('body', ''),
-                            published_at=r.get('published_at', ''),
+                            published_at=published_at,
                             prerelease=r.get('prerelease', False),
                             html_url=r.get('html_url', ''),
-                            zipball_url=r.get('zipball_url', '') or ''
+                            zipball_url=zipball
                         ))
                     
                     logger.info(f'从 {source_name} 获取到 {len(releases)} 个版本')
