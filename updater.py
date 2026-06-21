@@ -533,5 +533,7 @@ class Updater:
 
 
 def get_updater_from_app(app) -> Updater:
-    project_root = os.path.dirname(os.path.abspath(app.root_path))
+    # app.root_path 是 Flask 应用目录，VERSION 文件在项目根目录
+    # 如果 app.py 在项目根目录，则 root_path 就是项目根目录
+    project_root = app.root_path
     return Updater(project_root)
