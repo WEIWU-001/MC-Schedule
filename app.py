@@ -2525,7 +2525,9 @@ def csrf_protect():
         '/captcha', '/get_site_config', '/get_stats', '/get_reservation_ranking',
         '/get_friend_links', '/mc_server/status', '/mc_server/players',
         '/get_schedule', '/get_schedule_detail', '/get_tags', '/get_schedule_reservations',
-        '/favicon.ico'
+        '/favicon.ico',
+        '/send_code', '/register', '/login', '/logout', '/check_session',
+        '/forgot_password', '/reset_password'
     ]
     
     if request.path in exempt_routes or request.method == 'GET':
