@@ -87,10 +87,13 @@ class Updater:
                 return f.read().strip()
         return 'v0.0.0'
     
-    def _fetch_url(self, url: str, headers: dict = None) -> tuple:
+    def _fetch_url(self, url: str, headers: dict = None, github_api: bool = False) -> tuple:
         try:
             req = urllib.request.Request(url)
             req.add_header('User-Agent', 'MC-Schedule-Updater/1.0')
+            # GitHub API 需要特殊的 Accept 头
+            if github_api or 'api.github.com' in url:
+                req.add_header('Accept', 'application/vnd.github.v3+json')
             if headers:
                 for k, v in headers.items():
                     req.add_header(k, v)
