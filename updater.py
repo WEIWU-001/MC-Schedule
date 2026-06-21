@@ -290,6 +290,10 @@ class Updater:
                         ))
                     
                     logger.info(f'从 {source_name} 获取到 {len(releases)} 个版本')
+                    
+                    # 按版本号排序（从高到低）
+                    releases.sort(key=lambda r: self._version_key(r.tag_name), reverse=True)
+                    
                     return True, releases
                 except json.JSONDecodeError:
                     logger.warning(f'{source_name} 返回数据解析失败')
