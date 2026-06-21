@@ -1812,14 +1812,16 @@
                     body: formData
                 });
                 
+                // 获取响应内容用于调试
+                const responseText = await res.text();
+                
                 // 检查响应状态
-                if(!res.ok){
-                    const text = await res.text();
-                    releaseList.innerHTML = `<tr><td colspan="4" style="padding:15px;text-align:center;color:#E74C3C;">❌ HTTP ${res.status}: ${text.substring(0, 200)}</td></tr>`;
+                if(!res.ok || !responseText.startsWith('{')){
+                    releaseList.innerHTML = `<tr><td colspan="4" style="padding:15px;text-align:center;color:#E74C3C;font-size:11px;word-break:break-all;">❌ HTTP ${res.status}<br>响应: ${responseText.substring(0, 500)}</td></tr>`;
                     return;
                 }
                 
-                const data = await res.json();
+                const data = JSON.parse(responseText);
                 
                 if(data.ok === 1){
                     if(data.releases && data.releases.length > 0){
@@ -1870,7 +1872,7 @@
                 }
             } catch(e){
                 console.error("加载版本列表失败:", e);
-                releaseList.innerHTML = `<tr><td colspan="4" style="padding:15px;text-align:center;color:#E74C3C;">❌ 加载失败: ${e}</td></tr>`;
+                releaseList.innerHTML = `<tr><td colspan="4" style="padding:15px;text-align:center;color:#E74C3C;">❌ 请求失败: ${e.message}</td></tr>`;
             }
         }
         
