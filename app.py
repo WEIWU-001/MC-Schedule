@@ -8940,7 +8940,7 @@ def check_update():
         return jsonify({'ok': 0, 'msg': '权限不足（仅最高管理员可用）'})
     
     try:
-        from updater import get_updater_from_app, UpdaterError
+        from updater import get_updater_from_app
         
         updater = get_updater_from_app(app)
         source_id = request.form.get('source_id', '')
@@ -8951,23 +8951,17 @@ def check_update():
             'ok': 1,
             'data': {
                 'current_version': version_info.current_version,
-                'current_branch': version_info.current_branch,
                 'has_update': version_info.has_update,
                 'latest_version': version_info.latest_version,
                 'update_log': version_info.update_log,
-                'used_mirror': version_info.used_source
+                'used_mirror': version_info.used_source,
+                'release_url': version_info.release_url
             }
-        })
-    except UpdaterError as e:
-        return jsonify({
-            'ok': 0,
-            'msg': '无法连接到更新源，请检查网络或尝试使用代理服务器',
-            'detail': str(e)
         })
     except Exception as e:
         return jsonify({'ok': 0, 'msg': f'检查更新失败: {str(e)}'})
 
-# 执行更新（混合策略：git → 下载ZIP → 提示手动上传）
+# 执行更新
 @app.route('/admin/do_update', methods=['POST'])
 def do_update():
     uid = session.get('user')
@@ -8984,26 +8978,22 @@ def do_update():
         updater = get_updater_from_app(app)
         source_id = request.form.get('source_id', '')
         
-        # 使用混合更新策略
-        result = updater.hybrid_update(source_id=source_id)
+        result = updater.do_update(source_id=source_id)
         
         if result.success:
-            # 记录更新方式
             method_names = {
-                'git': 'Git拉取',
                 'zip_download': 'ZIP下载',
                 'zip_upload': 'ZIP上传'
             }
             method_name = method_names.get(result.update_method, result.update_method or '未知')
             
-            log_security(get_client_ip(), 'SYSTEM_UPDATE', 'HYBRID', user_id=uid, 
+            log_security(get_client_ip(), 'SYSTEM_UPDATE', 'UPDATE', user_id=uid, 
                         detail=f'通过 {method_name}（{result.used_source}）更新，新版本: {result.new_version}')
             
             return jsonify({
                 'ok': 1,
                 'msg': result.message,
                 'new_version': result.new_version,
-                'output': result.output,
                 'used_source': result.used_source,
                 'update_method': result.update_method,
                 'updated_files': len(result.updated_files) if result.updated_files else 0
@@ -9082,14 +9072,23 @@ def test_update_sources():
         updater = get_updater_from_app(app)
         results = updater.test_sources()
         
+        # 转换为字典列表
+        results_list = [{
+            'id': r.id,
+            'name': r.name,
+            'success': r.available,
+            'latency': r.latency,
+            'error': r.error
+        } for r in results]
+        
         # 按成功率和延迟排序
-        results.sort(key=lambda x: (not x['success'], x['latency'] if x['success'] else float('inf')))
+        results_list.sort(key=lambda x: (not x['success'], x['latency'] if x['success'] else float('inf')))
         
         return jsonify({
             'ok': 1,
-            'results': results,
-            'total_tests': len(results),
-            'success_count': sum(1 for r in results if r['success'])
+            'results': results_list,
+            'total_tests': len(results_list),
+            'success_count': sum(1 for r in results_list if r['success'])
         })
     except Exception as e:
         import traceback
