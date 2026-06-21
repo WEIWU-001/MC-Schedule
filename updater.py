@@ -152,25 +152,30 @@ class Updater:
         results = []
         
         start = time.time()
-        success, _ = self._fetch_url(self.GITHUB_API_LATEST)
+        success, error = self._fetch_url(self.GITHUB_API_LATEST)
         latency = int((time.time() - start) * 1000)
+        
+        # 403 通常是速率限制，不是连接问题
+        if not success and error and '403' in str(error):
+            error = '速率限制'
+        
         results.append(SourceStatus(
             id='github',
             name='GitHub（直连）',
             available=success,
             latency=latency,
-            error=None if success else _
+            error=error
         ))
         
         start = time.time()
-        success, _ = self._fetch_url(self.GITEE_API_LATEST)
+        success, error = self._fetch_url(self.GITEE_API_LATEST)
         latency = int((time.time() - start) * 1000)
         results.append(SourceStatus(
             id='gitee',
             name='Gitee（直连）',
             available=success,
             latency=latency,
-            error=None if success else _
+            error=error
         ))
         
         return results
