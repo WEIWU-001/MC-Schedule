@@ -1811,6 +1811,14 @@
                     method: "POST",
                     body: formData
                 });
+                
+                // 检查响应状态
+                if(!res.ok){
+                    const text = await res.text();
+                    releaseList.innerHTML = `<tr><td colspan="4" style="padding:15px;text-align:center;color:#E74C3C;">❌ HTTP ${res.status}: ${text.substring(0, 200)}</td></tr>`;
+                    return;
+                }
+                
                 const data = await res.json();
                 
                 if(data.ok === 1){
