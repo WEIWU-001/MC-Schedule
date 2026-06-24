@@ -29,6 +29,24 @@
     </div>
 </div>
 
+<!-- 滚动公告栏 -->
+<div class="announcement-bar" id="announcementBar">
+    <div class="announcement-content">
+        <span class="announcement-icon">📢</span>
+        <div class="announcement-text" id="announcementText">欢迎访问MC整合包档期排期站</div>
+    </div>
+</div>
+
+<!-- 进站提醒弹窗 -->
+<div class="entry-notice-modal" id="entryNoticeModal">
+    <div class="entry-notice-content">
+        <button class="entry-notice-close" onclick="closeEntryNotice()">&times;</button>
+        <div class="entry-notice-title">站内公告</div>
+        <div class="entry-notice-text" id="entryNoticeText">欢迎访问MC整合包档期排期站</div>
+        <button class="entry-notice-btn" onclick="closeEntryNotice()">知道了</button>
+    </div>
+</div>
+
 <!-- 主内容区 -->
 <div class="container">
     <!-- 左侧侧边栏（平台数据和排行榜） -->
@@ -274,7 +292,7 @@
         <h3>📋 用户注册须知</h3>
         <div class="notice-scroll-content" id="registerNoticeContent" onscroll="checkRegisterScroll()">
             <h4 style="color:#42C9D8;margin:15px 0;">欢迎注册 MC整合包档期排期站！</h4>
-            <div style="color:#ccc;font-size:13px;line-height:2;">
+            <div style="color:var(--text-muted);font-size:13px;line-height:2;">
                 <p style="margin:10px 0;"><strong style="color:#42C9D8">一、账号注册</strong></p>
                 <p>1. 游戏ID需唯一且不可重复，注册成功后无法修改，请谨慎填写<br>
                 2. 每位用户仅可注册一个账号，禁止注册多个账号</p>
@@ -315,11 +333,11 @@
                 2. 如发现账号异常，请立即联系管理员<br>
                 3. 请定期更换密码，确保账号安全</p>
                 
-                <p style="margin:15px 0 10px 0;color:#888;">— 请滑动阅读全部内容 —</p>
+                <p style="margin:15px 0 10px 0;color:var(--text-muted);">— 请滑动阅读全部内容 —</p>
             </div>
         </div>
         <div class="notice-footer">
-            <label style="display:flex;align-items:center;gap:8px;color:#888;font-size:13px;">
+            <label style="display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:13px;">
                 <input type="checkbox" id="agreeRegisterNotice" onchange="checkRegisterNotice()">
                 我已阅读并同意上述所有条款（滑动至底部可勾选）
             </label>
@@ -350,7 +368,7 @@
             <label>图片验证码</label>
             <div style="display:flex;gap:10px;align-items:center;">
                 <input type="text" id="captchaInput" placeholder="请输入验证码" maxlength="4" style="flex:1;">
-                <img id="captchaImg" src="/captcha" onclick="refreshCaptcha()" style="width:150px;height:50px;cursor:pointer;border-radius:4px;border:1px solid #333;" title="点击刷新验证码">
+                <img id="captchaImg" src="/captcha" onclick="refreshCaptcha()" style="width:130px;height:42px;cursor:pointer;border-radius:4px;border:1px solid var(--border);" title="点击刷新验证码">
             </div>
         </div>
         <div class="form-item code-row">
@@ -372,16 +390,16 @@
     <div class="modal-content" style="max-width:420px;text-align:center;">
         <button class="modal-close-btn" onclick="closeModal('regSuccessModal')">&times;</button>
         <h3 style="color:#2ECC71;">🎉 注册成功！</h3>
-        <p style="color:#888;font-size:13px;margin:10px 0;">请查看邮箱获取账号信息，登录请使用邮箱</p>
+        <p style="color:var(--text-muted);font-size:13px;margin:10px 0;">请使用邮箱登录，祝您使用愉快</p>
         
-        <div style="background:#1a1a2e;border-radius:8px;padding:15px;margin:15px 0;text-align:left;">
+        <div style="background:var(--bg-tertiary);border-radius:8px;padding:15px;margin:15px 0;text-align:left;">
             <div style="margin:10px 0;display:flex;align-items:center;justify-content:space-between;">
-                <span style="color:#888;font-size:13px;">昵称</span>
-                <span style="color:#fff;font-weight:bold;" id="regSuccessNickname">-</span>
+                <span style="color:var(--text-muted);font-size:13px;">昵称</span>
+                <span style="color:var(--text-primary);font-weight:bold;" id="regSuccessNickname">-</span>
             </div>
             <div style="margin:10px 0;display:flex;align-items:center;justify-content:space-between;">
-                <span style="color:#888;font-size:13px;">邮箱</span>
-                <span style="color:#fff;font-size:13px;" id="regSuccessEmail">-</span>
+                <span style="color:var(--text-muted);font-size:13px;">邮箱</span>
+                <span style="color:var(--text-primary);font-size:13px;" id="regSuccessEmail">-</span>
             </div>
         </div>
         
@@ -420,7 +438,7 @@
         
         <div class="form-item">
             <label>反馈内容：</label>
-            <textarea id="feedbackContent" rows="6" placeholder="请详细描述您的建议、问题或遇到的Bug...（至少10个字符）" style="width:100%;padding:8px;background:#333;border:1px solid #555;color:#fff;border-radius:4px;outline:none;"></textarea>
+            <textarea id="feedbackContent" rows="6" placeholder="请详细描述您的建议、问题或遇到的Bug...（至少10个字符）" style="width:100%;padding:8px;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-primary);border-radius:4px;outline:none;"></textarea>
         </div>
         
         <button class="form-btn" onclick="submitFeedback()">提交反馈</button>
@@ -437,8 +455,8 @@
             <button onclick="loadInboxList('unread')" id="inboxTabUnread" style="background:#555;border:none;padding:10px 20px;border-radius:6px;cursor:pointer;color:#fff;font-weight:500;font-size:14px;transition:all 0.2s;">未读邮件</button>
             <button onclick="markAllInboxRead()" style="background:#42C9D8;border:none;padding:10px 20px;border-radius:6px;cursor:pointer;color:#111;font-weight:500;font-size:14px;transition:all 0.2s;">全部标为已读</button>
         </div>
-        <div id="inboxList" style="flex:1;overflow-y:auto;max-height:60vh;border:1px solid #333;border-radius:12px;padding:15px;background:#1a1a2e;">
-            <div style="text-align:center;color:#888;padding:40px;">加载中...</div>
+        <div id="inboxList" style="flex:1;overflow-y:auto;max-height:60vh;border:1px solid var(--border);border-radius:12px;padding:15px;background:var(--bg-tertiary);">
+            <div style="text-align:center;color:var(--text-muted);padding:40px;">加载中...</div>
         </div>
     </div>
 </div>
@@ -448,9 +466,9 @@
     <div class="modal-content" style="max-width:550px;max-height:85vh;display:flex;flex-direction:column;">
         <button class="modal-close-btn" onclick="closeModal('inboxDetailModal')">&times;</button>
         <h3 id="inboxDetailTitle" style="flex-shrink:0;margin-bottom:5px;">📧 邮件详情</h3>
-        <div style="margin:10px 0;color:#888;font-size:13px;flex-shrink:0;" id="inboxDetailTime"></div>
+        <div style="margin:10px 0;color:var(--text-muted);font-size:13px;flex-shrink:0;" id="inboxDetailTime"></div>
         <div id="inboxDetailType" style="display:inline-block;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:500;margin-bottom:15px;flex-shrink:0;"></div>
-        <div id="inboxDetailContent" style="background:#1a1a2e;border-radius:12px;padding:20px;min-height:150px;white-space:pre-wrap;line-height:1.8;font-size:15px;overflow-y:auto;flex:1;"></div>
+        <div id="inboxDetailContent" style="background:var(--bg-tertiary);border-radius:12px;padding:20px;min-height:150px;white-space:pre-wrap;line-height:1.8;font-size:15px;overflow-y:auto;flex:1;"></div>
         <div style="margin-top:20px;display:flex;gap:15px;justify-content:flex-end;flex-shrink:0;">
             <button onclick="deleteCurrentInbox()" style="background:#E74C3C;border:none;padding:10px 20px;border-radius:6px;cursor:pointer;color:#fff;font-weight:500;font-size:14px;transition:all 0.2s;">删除</button>
             <button onclick="closeModal('inboxDetailModal')" style="background:#555;border:none;padding:10px 20px;border-radius:6px;cursor:pointer;color:#fff;font-weight:500;font-size:14px;transition:all 0.2s;">关闭</button>
@@ -465,17 +483,17 @@
         <h3>👤 个人中心</h3>
         <div class="msg" id="profileMsg"></div>
         
-        <div style="background:#1a1a2e;border-radius:8px;padding:15px;margin:15px 0;">
-            <div style="margin:12px 0;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #333;padding-bottom:8px;">
-                <span style="color:#888;font-size:13px;">昵称</span>
+        <div style="background:var(--bg-tertiary);border-radius:8px;padding:15px;margin:15px 0;">
+            <div style="margin:12px 0;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);padding-bottom:8px;">
+                <span style="color:var(--text-muted);font-size:13px;">昵称</span>
                 <div style="display:flex;align-items:center;gap:8px;">
-                    <span style="color:#fff;font-weight:bold;" id="profileNickname">-</span>
+                    <span style="color:var(--text-primary);font-weight:bold;" id="profileNickname">-</span>
                     <button onclick="showEditNickname()" style="background:#42C9D8;border:none;padding:2px 8px;border-radius:4px;color:#111;font-size:12px;cursor:pointer;">修改</button>
                 </div>
             </div>
             <div style="margin:12px 0;display:flex;align-items:center;justify-content:space-between;">
-                <span style="color:#888;font-size:13px;">邮箱</span>
-                <span style="color:#fff;font-size:13px;" id="profileEmail">-</span>
+                <span style="color:var(--text-muted);font-size:13px;">邮箱</span>
+                <span style="color:var(--text-primary);font-size:13px;" id="profileEmail">-</span>
             </div>
         </div>
         
@@ -514,7 +532,7 @@
         <h3>📋 成为档主须知</h3>
         <div class="notice-scroll-content" id="applyOpNoticeContent" onscroll="checkApplyOpScroll()">
             <h4 style="color:#9B59B6;margin:15px 0;">申请成为档主</h4>
-            <div style="color:#ccc;font-size:13px;line-height:2;">
+            <div style="color:var(--text-muted);font-size:13px;line-height:2;">
                 <p style="margin:10px 0;"><strong style="color:#9B59B6">一、身份验证</strong></p>
                 <p>1. 申请需提供服务器IP或Q群号进行身份验证<br>
                 2. 管理员将核实您是否为真实的服务器管理者<br>
@@ -557,11 +575,11 @@
                 2. 用户间交易行为与平台无关<br>
                 3. 档主需自行承担发布内容的法律责任</p>
                 
-                <p style="margin:15px 0 10px 0;color:#888;">— 请滑动阅读全部内容 —</p>
+                <p style="margin:15px 0 10px 0;color:var(--text-muted);">— 请滑动阅读全部内容 —</p>
             </div>
         </div>
         <div class="notice-footer">
-            <label style="display:flex;align-items:center;gap:8px;color:#888;font-size:13px;">
+            <label style="display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:13px;">
                 <input type="checkbox" id="agreeApplyOpNotice" onchange="checkApplyOpNotice()">
                 我已阅读并同意上述所有条款（滑动至底部可勾选）
             </label>
@@ -576,7 +594,7 @@
         <button class="modal-close-btn" onclick="closeModal('applyOpModal')">&times;</button>
         <h3>申请成为档主</h3>
         <div class="msg" id="applyMsg" style="margin-bottom:10px;"></div>
-        <p style="font-size:13px;color:#aaa;margin-bottom:15px;">请填写以下信息进行身份验证：</p>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:15px;">请填写以下信息进行身份验证：</p>
         
         <div class="form-item">
             <label>服务器IP<span style="color:#e74c3c">*</span></label>
@@ -678,9 +696,9 @@
     <div class="modal-content" style="width: 480px;">
         <button class="modal-close-btn" onclick="closeModal('serverStatusModal')">&times;</button>
         <h3>🖥️ 服务器状态查询</h3>
-        <div id="serverStatusModalHost" style="font-size:13px;color:#888;margin-bottom:15px;"></div>
+        <div id="serverStatusModalHost" style="font-size:13px;color:var(--text-muted);margin-bottom:15px;"></div>
         <div id="serverStatusModalContent" style="min-height: 150px;">
-            <div style="text-align:center;color:#888;padding:40px 0;">查询中...</div>
+            <div style="text-align:center;color:var(--text-muted);padding:40px 0;">查询中...</div>
         </div>
     </div>
 </div>
@@ -691,12 +709,12 @@
         <button class="modal-close-btn" onclick="closeModal('bgSettingsModal')">&times;</button>
         <h3>🎨 界面设置</h3>
         <div class="msg" id="bgSettingsMsg"></div>
-        <div style="background:#1a1a2e;border-radius:8px;padding:15px;margin:15px 0;">
+        <div style="background:var(--bg-tertiary);border-radius:8px;padding:15px;margin:15px 0;">
             <!-- 背景图片设置 -->
             <div>
                 <div style="color:#4fc3f7;font-size:13px;margin-bottom:8px;">🖼️ 背景图片</div>
-                <input type="text" id="bgUrlInput" placeholder="粘贴图片URL地址或选择预设背景" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d1a;color:#fff;font-size:13px;box-sizing:border-box;">
-                <div id="bgPreview" style="max-height:120px;display:none;overflow:hidden;border-radius:6px;border:1px solid #333;margin:10px 0;">
+                <input type="text" id="bgUrlInput" placeholder="粘贴图片URL地址或选择预设背景" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:13px;box-sizing:border-box;">
+                <div id="bgPreview" style="max-height:120px;display:none;overflow:hidden;border-radius:6px;border:1px solid var(--border);margin:10px 0;">
                     <img id="bgPreviewImg" style="width:100%;height:auto;" />
                 </div>
                 <div style="display:flex;gap:8px;margin-top:12px;">

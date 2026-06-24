@@ -87,6 +87,17 @@ async function loadSiteConfig() {
         const data = await resp.json();
         if (data.ok) {
             if (data.configs.site_title) document.getElementById("siteTitle").textContent = data.configs.site_title;
+            if (data.configs.site_announcement) {
+                document.getElementById("announcementText").textContent = data.configs.site_announcement;
+                document.getElementById("announcementBar").style.display = "block";
+                document.getElementById("entryNoticeText").textContent = data.configs.site_announcement;
+                
+                setTimeout(() => {
+                    checkAndShowEntryNotice(data.configs.site_announcement);
+                }, 500);
+            } else {
+                document.getElementById("announcementBar").style.display = "none";
+            }
             if (data.configs.footer_text) document.querySelector(".footer-text").textContent = data.configs.footer_text;
             const localBgImage = localStorage.getItem('localBackgroundImage');
             if (localBgImage) {
@@ -477,6 +488,47 @@ function closeModal(id){
     }
 }
 
+function checkAndShowEntryNotice(announcement) {
+    const lastNoticeTime = localStorage.getItem('last_entry_notice_time');
+    const lastNoticeHash = localStorage.getItem('last_entry_notice_hash');
+    const currentTime = Date.now();
+    
+    const noticeHash = encodeURIComponent(announcement);
+    const noticeExpireHours = 24;
+    const expireTime = noticeExpireHours * 60 * 60 * 1000;
+    
+    if (!lastNoticeTime || !lastNoticeHash) {
+        showEntryNotice();
+        return;
+    }
+    
+    const timeDiff = currentTime - parseInt(lastNoticeTime);
+    
+    if (lastNoticeHash !== noticeHash || timeDiff >= expireTime) {
+        showEntryNotice();
+    }
+}
+
+function showEntryNotice() {
+    const modal = document.getElementById('entryNoticeModal');
+    if(modal) {
+        modal.style.display = "flex";
+        setTimeout(() => modal.classList.add('show'), 10);
+    }
+}
+
+function closeEntryNotice() {
+    const modal = document.getElementById('entryNoticeModal');
+    if(modal) {
+        modal.classList.remove('show');
+        setTimeout(() => modal.style.display = "none", 300);
+        
+        const announcement = document.getElementById('entryNoticeText').textContent;
+        localStorage.setItem('last_entry_notice_time', Date.now().toString());
+        localStorage.setItem('last_entry_notice_hash', encodeURIComponent(announcement));
+    }
+}
+
 async function getCode(){
     const email = document.getElementById("regEmail").value.trim();
     const captcha = document.getElementById("captchaInput").value.trim();
@@ -491,6 +543,7 @@ async function getCode(){
     const res = await fetch("/send_code",{
         method:"POST",
         headers:{"Content-Type":"application/json"},
+        credentials: 'include',
         body:JSON.stringify({email:email, captcha:captcha})
     });
     const data = await res.json();
@@ -1014,6 +1067,7 @@ async function doRegister(){
     const res = await fetch("/register",{
         method:"POST",
         headers:{"Content-Type":"application/json"},
+        credentials: 'include',
         body:JSON.stringify({nickname,pwd,email,code})
     });
     const data = await res.json();
@@ -1412,12 +1466,18 @@ function renderCardGrid(list, year, month){
         return a.time.localeCompare(b.time);
     });
     
-    if(sortedList.length === 0){
+    // 按日期排序，只显示有监控的档期
+    const monitoredList = sortedList.filter(event => {
+        const mcStatus = event.mc_status_check;
+        return (mcStatus === 1 || mcStatus === '1') && event.ip;
+    });
+    
+    if(monitoredList.length === 0){
         body.innerHTML = `
             <div class="empty-state">
-                <div style="font-size:48px;margin-bottom:16px;">🃏</div>
-                <div style="font-size:18px;color:var(--text-secondary);">本月暂无档期安排</div>
-                <div style="font-size:14px;color:var(--text-muted);margin-top:8px;">快来添加第一个档期吧！</div>
+                <div style="font-size:48px;margin-bottom:16px;">📡</div>
+                <div style="font-size:18px;color:var(--text-secondary);">暂无监控中的服务器</div>
+                <div style="font-size:14px;color:var(--text-muted);margin-top:8px;">在档期编辑中开启服务器状态查询</div>
             </div>
         `;
         return;
@@ -1426,7 +1486,7 @@ function renderCardGrid(list, year, month){
     let html = '<div class="card-grid">';
     
     // 按日期分组显示
-    sortedList.forEach(event => {
+    monitoredList.forEach(event => {
         const statusCls = event.status;
         const hasServerMonitor = event.mc_status_check == 1 && event.ip;
         const statusText = event.status === 'live' ? '进行中' : event.status === 'past' ? '已结束' : '待开始';
@@ -1484,7 +1544,7 @@ async function fetchCardServerStatus(scheduleId, ip) {
         const res = await fetch("/mc_server/status",{
             method: "POST",
             headers:{"Content-Type":"application/json"},
-            body: JSON.stringify({host: ip})
+            body: JSON.stringify({host: ip, schedule_id: scheduleId})
         });
         const data = await res.json();
         console.log(`API返回:`, data);
@@ -2272,14 +2332,15 @@ function renderSideBar(list){
     }else{
         let html = "";
         futureList.forEach(item => {
-            let contactStr = "";
-            if(item.ip) contactStr += ` IP：${item.ip}`;
+            let contactLines = [];
+            if(item.ip) contactLines.push(`IP：${item.ip}`);
             if(item.contact_value) {
                 const icon = icons[item.contact_type] || '';
-                contactStr += ` ${icon}${item.contact_value}`;
+                contactLines.push(`${icon}${item.contact_value}`);
             }
-            let creatorStr = item.creator_nickname ? ` (👤${item.creator_nickname})` : "";
-            html += `<div class="item">${item.day}日 ${item.time} | ${item.server_id}${contactStr}${creatorStr}</div>`;
+            let contactHtml = contactLines.length > 0 ? `<br><span style="font-size:12px;color:var(--text-muted);">${contactLines.join(' | ')}</span>` : "";
+            let creatorStr = item.creator_nickname ? `<br><span style="font-size:12px;color:var(--text-muted);">👤 ${item.creator_nickname}</span>` : "";
+            html += `<div class="item" style="cursor:pointer;padding:8px 0;border-bottom:1px solid var(--border-light);" onclick="showScheduleDetail(${item.id})"><strong>${item.month}月${item.day}日 ${item.time}</strong><br>${item.server_id}${contactHtml}${creatorStr}</div>`;
         });
         nextServerDom.innerHTML = html;
     }
@@ -2300,14 +2361,15 @@ function renderSideBar(list){
         }else{
             let html = "";
             upcomingList.forEach(item => {
-                let contactStr = "";
-                if(item.ip) contactStr += ` IP：${item.ip}`;
+                let contactLines = [];
+                if(item.ip) contactLines.push(`IP：${item.ip}`);
                 if(item.contact_value) {
                     const icon = icons[item.contact_type] || '';
-                    contactStr += ` ${icon}${item.contact_value}`;
+                    contactLines.push(`${icon}${item.contact_value}`);
                 }
-                let creatorStr = item.creator_nickname ? ` (👤${item.creator_nickname})` : "";
-                html += `<div class="item" style="cursor:pointer;" onclick="showScheduleDetail(${item.id})">${item.month}月${item.day}日 ${item.time} | ${item.server_id}${contactStr}${creatorStr}</div>`;
+                let contactHtml = contactLines.length > 0 ? `<br><span style="font-size:12px;color:var(--text-muted);">${contactLines.join(' | ')}</span>` : "";
+                let creatorStr = item.creator_nickname ? `<br><span style="font-size:12px;color:var(--text-muted);">👤 ${item.creator_nickname}</span>` : "";
+                html += `<div class="item" style="cursor:pointer;padding:8px 0;" onclick="showScheduleDetail(${item.id})"><strong>${item.month}月${item.day}日 ${item.time}</strong><br>${item.server_id}${contactHtml}${creatorStr}</div>`;
             });
             bookTipDom.innerHTML = html;
         }

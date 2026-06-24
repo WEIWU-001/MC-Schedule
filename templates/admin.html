@@ -149,6 +149,36 @@
         .test-controls input{flex:1;min-width:250px;padding:8px;background:#333;border:1px solid #555;border-radius:4px;color:#fff}
         .test-controls select{padding:8px;background:#333;border:1px solid #555;border-radius:4px;color:#fff}
         .test-controls button{background:#42C9D8;border:none;padding:8px 20px;border-radius:4px;cursor:pointer;font-weight:bold}
+        
+        /* 批量发送邮件样式 */
+        .batch-send-section{background:linear-gradient(135deg, #2A2A3A 0%, #1a1a2e 100%);border:1px solid rgba(66,201,216,0.2)}
+        .batch-send-section h4{color:#E74C3C;font-size:18px;display:flex;align-items:center;gap:8px}
+        .batch-controls{display:flex;gap:20px;margin-bottom:20px;flex-wrap:wrap}
+        .batch-control-item{display:flex;flex-direction:column;gap:6px}
+        .batch-control-item label{font-size:13px;color:#888;font-weight:500}
+        .batch-select{padding:10px 15px;background:#333;border:1px solid #555;border-radius:8px;color:#fff;font-size:14px;min-width:150px}
+        .batch-form-group{margin-bottom:18px}
+        .batch-form-group label{display:block;margin-bottom:8px;font-size:14px;color:#ccc;font-weight:500}
+        .batch-form-group input,.batch-form-group textarea{width:100%;padding:12px 15px;background:#252535;border:1px solid #444;border-radius:8px;color:#fff;font-size:14px;line-height:1.6;transition:border-color 0.2s}
+        .batch-form-group input:focus,.batch-form-group textarea:focus{outline:none;border-color:#42C9D8}
+        .batch-form-group textarea{resize:vertical;min-height:100px}
+        .batch-markdown-hint{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;color:#666}
+        .batch-hint-icon{font-size:14px}
+        .batch-actions{display:flex;gap:12px;margin-top:20px}
+        .batch-btn{display:flex;align-items:center;gap:8px;padding:12px 24px;border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;transition:all 0.3s;border:none}
+        .batch-btn-send{background:linear-gradient(135deg, #E74C3C 0%, #C0392B 100%);color:#fff;box-shadow:0 4px 15px rgba(231,76,60,0.3)}
+        .batch-btn-send:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(231,76,60,0.4)}
+        .batch-btn-send:disabled{opacity:0.6;cursor:not-allowed;transform:none}
+        .batch-btn-stop{background:#555;color:#fff}
+        .batch-btn-stop:hover{background:#666}
+        .batch-btn-icon{font-size:16px}
+        .batch-progress{margin-top:20px;padding:20px;background:#1a1a2e;border-radius:10px;border:1px solid #333}
+        .batch-progress-header{display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:15px;color:#fff}
+        .batch-progress-icon{font-size:18px}
+        .batch-progress-bar{height:10px;background:#333;border-radius:5px;overflow:hidden;margin-bottom:12px}
+        .batch-progress-bar div{height:100%;background:linear-gradient(90deg, #42C9D8 0%, #2ECC71 100%);border-radius:5px;transition:width 0.3s;width:0%}
+        .batch-progress-stats{display:flex;justify-content:space-between;font-size:13px;color:#888}
+        .batch-progress-result{margin-top:10px;font-size:14px}
     </style>
 </head>
 <body>
@@ -404,6 +434,77 @@
                     </div>
                     <p id="testEmailResult" style="margin-top:10px;font-size:14px;"></p>
                 </div>
+                
+                <div class="test-section batch-send-section" style="margin-top:20px;">
+                    <h4>📤 批量发送邮件</h4>
+                    <p class="tip" style="margin-bottom:15px;">向多个邮箱发送统一内容的邮件，支持 <strong>Markdown</strong> 格式，支持选择发送间隔避免被拦截</p>
+                    
+                    <div class="batch-controls">
+                        <div class="batch-control-item">
+                            <label>发送邮箱</label>
+                            <select id="batchEmailIndex" class="batch-select">
+                                <option value="0" selected>主邮箱</option>
+                            </select>
+                        </div>
+                        <div class="batch-control-item">
+                            <label>发送间隔</label>
+                            <select id="batchInterval" class="batch-select">
+                                <option value="1">1秒</option>
+                                <option value="2">2秒</option>
+                                <option value="3" selected>3秒（推荐）</option>
+                                <option value="5">5秒</option>
+                                <option value="10">10秒</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="batch-form-group">
+                        <label>📧 接收邮箱（多个用换行分隔）</label>
+                        <textarea id="batchEmails" rows="3" placeholder="example1@qq.com&#10;example2@163.com&#10;example3@gmail.com"></textarea>
+                    </div>
+                    
+                    <div class="batch-form-group">
+                        <label>📝 邮件标题</label>
+                        <input type="text" id="batchSubject" placeholder="输入邮件标题">
+                    </div>
+                    
+                    <div class="batch-form-group">
+                        <label>📄 邮件内容（支持 Markdown）</label>
+                        <textarea id="batchContent" rows="5" placeholder="支持 Markdown 格式：
+# 标题
+**粗体** *斜体*
+- 列表项
+[链接文字](URL)"></textarea>
+                        <div class="batch-markdown-hint">
+                            <span class="batch-hint-icon">💡</span>
+                            支持 Markdown：# 标题 | **粗体** | *斜体* | - 列表 | [链接](url)
+                        </div>
+                    </div>
+                    
+                    <div class="batch-actions">
+                        <button onclick="startBatchSend()" id="batchSendBtn" class="batch-btn batch-btn-send">
+                            <span class="batch-btn-icon">🚀</span> 开始发送
+                        </button>
+                        <button onclick="stopBatchSend()" id="batchStopBtn" class="batch-btn batch-btn-stop" style="display:none;">
+                            <span class="batch-btn-icon">⏹</span> 停止
+                        </button>
+                    </div>
+                    
+                    <div id="batchProgress" class="batch-progress" style="display:none;">
+                        <div class="batch-progress-header">
+                            <span class="batch-progress-icon" id="batchStatusIcon">⏳</span>
+                            <span id="batchStatus">准备中...</span>
+                        </div>
+                        <div class="batch-progress-bar">
+                            <div id="batchProgressBar"></div>
+                        </div>
+                        <div class="batch-progress-stats">
+                            <span id="batchCount">0 / 0</span>
+                            <span id="batchTime"></span>
+                        </div>
+                        <div class="batch-progress-result" id="batchResult"></div>
+                    </div>
+                </div>
             </div>
             
             <!-- 站内邮件管理 -->
@@ -609,6 +710,9 @@
                 <div class="config-form">
                     <label>网站标题：</label>
                     <input type="text" id="siteTitleInput" placeholder="请输入网站标题">
+                    
+                    <label>滚动公告：</label>
+                    <input type="text" id="siteAnnouncementInput" placeholder="请输入滚动公告内容（游客可见）">
                     
                     <label>页脚信息：</label>
                     <input type="text" id="footerTextInput" placeholder="请输入页脚信息">
@@ -2726,6 +2830,7 @@
                 const data = await res.json();
                 if(data.ok === 1 && data.configs){
                     document.getElementById("siteTitleInput").value = data.configs["site_title"] || "";
+                    document.getElementById("siteAnnouncementInput").value = data.configs["site_announcement"] || "";
                     document.getElementById("footerTextInput").value = data.configs["footer_text"] || "";
                     const startTime = data.configs["site_start_time"] || "";
                     document.getElementById("siteStartTimeInput").value = startTime ? startTime.replace(" ", "T") : "";
@@ -2757,6 +2862,7 @@
         
         async function saveSiteConfig(){
             const siteTitle = document.getElementById("siteTitleInput").value.trim();
+            const siteAnnouncement = document.getElementById("siteAnnouncementInput").value.trim();
             const footerText = document.getElementById("footerTextInput").value.trim();
             const siteStartTime = document.getElementById("siteStartTimeInput").value.trim();
             
@@ -2772,6 +2878,13 @@
                     method:"POST",
                     headers:{"Content-Type":"application/json"},
                     body:JSON.stringify({key: "site_title", value: siteTitle})
+                });
+                
+                // 保存滚动公告
+                await fetch("/admin/set_system_config",{
+                    method:"POST",
+                    headers:{"Content-Type":"application/json"},
+                    body:JSON.stringify({key: "site_announcement", value: siteAnnouncement})
                 });
                 
                 // 保存页脚
@@ -3058,6 +3171,15 @@
                 `<option value="${i}">${e.name || `邮箱${i+1}`}</option>`
             ).join('');
             
+            // 更新批量发送的邮箱选择
+            const batchSelectEl = document.getElementById("batchEmailIndex");
+            if (batchSelectEl) {
+                batchSelectEl.innerHTML = emails.map((e, i) => {
+                    const label = e.name || `邮箱${i+1}`;
+                    return `<option value="${i}">${label}（${e.username}）</option>`;
+                }).join('');
+            }
+            
             let html = "";
             emails.forEach((email, index) => {
                 const usagePercent = email.max_daily > 0 
@@ -3253,6 +3375,142 @@
             }
             
             setTimeout(loadEmailPool, 3000);
+        }
+        
+        let batchSending = false;
+        let batchAbortController = null;
+        
+        async function startBatchSend() {
+            if (batchSending) return;
+            
+            const emailsText = document.getElementById("batchEmails").value.trim();
+            const subject = document.getElementById("batchSubject").value.trim();
+            const content = document.getElementById("batchContent").value.trim();
+            const emailIndex = parseInt(document.getElementById("batchEmailIndex").value);
+            const interval = parseInt(document.getElementById("batchInterval").value);
+            
+            if (!emailsText) {
+                alert("请输入收件人邮箱！");
+                return;
+            }
+            if (!subject) {
+                alert("请输入邮件标题！");
+                return;
+            }
+            if (!content) {
+                alert("请输入邮件内容！");
+                return;
+            }
+            
+            // 解析邮箱列表
+            const recipients = emailsText.split('\n').map(e => e.trim()).filter(e => e && e.includes('@'));
+            
+            if (recipients.length === 0) {
+                alert("未检测到有效的邮箱地址！");
+                return;
+            }
+            
+            const estimatedTime = Math.ceil(recipients.length * interval / 60);
+            if (!confirm(`确定要向 ${recipients.length} 个邮箱发送邮件吗？\n发送间隔：${interval}秒\n预计耗时：约 ${estimatedTime} 分钟`)) {
+                return;
+            }
+            
+            batchSending = true;
+            batchAbortController = new AbortController();
+            document.getElementById("batchSendBtn").style.display = "none";
+            document.getElementById("batchStopBtn").style.display = "inline-flex";
+            document.getElementById("batchProgress").style.display = "block";
+            document.getElementById("batchProgressBar").style.width = "0%";
+            document.getElementById("batchStatus").textContent = "正在发送...";
+            document.getElementById("batchStatusIcon").textContent = "⏳";
+            document.getElementById("batchCount").textContent = `0 / ${recipients.length}`;
+            document.getElementById("batchTime").textContent = "";
+            document.getElementById("batchResult").innerHTML = "";
+            
+            const startTime = Date.now();
+            let successCount = 0;
+            let failedCount = 0;
+            
+            try {
+                for (let i = 0; i < recipients.length; i++) {
+                    if (!batchSending) break;
+                    
+                    const recipient = recipients[i];
+                    const statusEl = document.getElementById("batchStatus");
+                    const statusIconEl = document.getElementById("batchStatusIcon");
+                    const progressBar = document.getElementById("batchProgressBar");
+                    const countEl = document.getElementById("batchCount");
+                    const timeEl = document.getElementById("batchTime");
+                    
+                    statusEl.textContent = `正在发送给 ${recipient}...`;
+                    
+                    try {
+                        const res = await fetch("/admin/batch_single", {
+                            method: "POST",
+                            headers: {"Content-Type": "application/json"},
+                            body: JSON.stringify({
+                                recipient: recipient,
+                                subject: subject,
+                                content: content,
+                                email_index: emailIndex
+                            })
+                        });
+                        const data = await res.json();
+                        
+                        if (data.ok === 1) {
+                            successCount++;
+                            document.getElementById("batchResult").innerHTML = `<span style="color:#2ECC71;">✅ 已发送 ${successCount} 封</span>`;
+                        } else {
+                            failedCount++;
+                            document.getElementById("batchResult").innerHTML = `<span style="color:#ff6b6b;">❌ 失败 ${failedCount} 封</span>`;
+                        }
+                    } catch(e) {
+                        failedCount++;
+                    }
+                    
+                    // 更新进度
+                    const progress = Math.round((i + 1) / recipients.length * 100);
+                    progressBar.style.width = progress + "%";
+                    countEl.textContent = `${i + 1} / ${recipients.length}`;
+                    
+                    // 计算剩余时间
+                    const elapsed = Date.now() - startTime;
+                    const avgTime = elapsed / (i + 1);
+                    const remaining = Math.ceil((recipients.length - i - 1) * avgTime / 1000);
+                    timeEl.textContent = `预计剩余 ${remaining} 秒`;
+                    
+                    // 发送间隔
+                    if (i < recipients.length - 1 && batchSending) {
+                        await new Promise(r => setTimeout(r, interval * 1000));
+                    }
+                }
+                
+                // 完成
+                const totalTime = Math.round((Date.now() - startTime) / 1000);
+                document.getElementById("batchStatus").textContent = "发送完成";
+                document.getElementById("batchStatusIcon").textContent = "✅";
+                document.getElementById("batchTime").textContent = `总耗时 ${totalTime} 秒`;
+                document.getElementById("batchProgressBar").style.width = "100%";
+                document.getElementById("batchProgressBar").style.background = "linear-gradient(90deg, #2ECC71 0%, #27AE60 100%)";
+                
+            } catch(e) {
+                document.getElementById("batchStatus").textContent = "发送出错";
+                document.getElementById("batchStatusIcon").textContent = "❌";
+                document.getElementById("batchResult").innerHTML = `<span style="color:#ff6b6b;">${e.message}</span>`;
+            }
+            
+            batchSending = false;
+            document.getElementById("batchSendBtn").style.display = "inline-flex";
+            document.getElementById("batchStopBtn").style.display = "none";
+            loadEmailPool();
+        }
+        
+        function stopBatchSend() {
+            batchSending = false;
+            document.getElementById("batchStatus").textContent = "已停止";
+            document.getElementById("batchStatusIcon").textContent = "⏹";
+            document.getElementById("batchSendBtn").style.display = "inline-flex";
+            document.getElementById("batchStopBtn").style.display = "none";
         }
 
         async function loadKeywords() {

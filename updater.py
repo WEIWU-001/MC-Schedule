@@ -112,8 +112,19 @@ class Updater:
         try:
             req = urllib.request.Request(url)
             req.add_header('User-Agent', 'MC-Schedule-Updater/1.0')
+            # GitHub/Gitee 归档链接需要跟随重定向
+            req.add_header('Accept', 'application/zip')
             
             with urllib.request.urlopen(req, timeout=120) as resp:
+                # 处理重定向（GitHub zipball_url 会重定向到实际文件）
+                final_url = resp.geturl()
+                
+                # 检查是否重定向到 HTML 页面（通常表示错误）
+                if final_url.endswith('.html') or 'github.com' in final_url and '/archive/' not in final_url:
+                    content = resp.read()
+                    if content.startswith(b'<!DOCTYPE') or content.startswith(b'<html'):
+                        return False, '下载链接返回了HTML页面，可能是仓库没有该版本或链接无效'
+                
                 with open(save_path, 'wb') as f:
                     while True:
                         chunk = resp.read(8192)
@@ -280,7 +291,7 @@ class Updater:
                         if not zipball and 'tag_name' in r:
                             # 手动构造 zipball URL
                             if 'gitee' in api_url:
-                                zipball = f"https://gitee.com/weiwu001/MC-Schedule/archive/{r['tag_name']}.zip"
+                                zipball = f"https://gitee.com/weiwu001/MC-Schedule/repository/archive/{r['tag_name']}.zip"
                             else:
                                 zipball = f"https://github.com/WEIWU-001/MC-Schedule/archive/refs/tags/{r['tag_name']}.zip"
                         

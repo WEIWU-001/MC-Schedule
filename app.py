@@ -129,6 +129,14 @@ from email.mime.text import MIMEText
 from email.header import Header
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
+import re
+
+try:
+    import marked
+    MARKDOWN_ENABLED = True
+except ImportError:
+    MARKDOWN_ENABLED = False
+    print("marked 模块未安装，Markdown 支持将使用简单转换")
 
 # ===================== 日志配置 =====================
 if os.name == 'posix':
@@ -664,6 +672,8 @@ def init_db(admin_username, admin_password, admin_email):
                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                    FOREIGN KEY (uid) REFERENCES users(id),
                    FOREIGN KEY (reward_id) REFERENCES rewards(id))''')
+
+    
 
     # ==================== 公告系统表 ====================
     c.execute('''CREATE TABLE IF NOT EXISTS announcements
@@ -1781,7 +1791,15 @@ class EmailPoolManager:
         conn.close()
         return None
     
-    def _send_with_smtp(self, email_config, recipients, subject, body):
+    def get_next_email(self):
+        """获取下一个可用的邮箱配置"""
+        idx = self._find_available_email()
+        if idx is not None:
+            self.current_index = (idx + 1) % len(self.email_pool)
+            return self.email_pool[idx]
+        return None
+    
+    def _send_with_smtp(self, email_config, recipients, subject, body, is_html=False):
         """使用 smtplib 直接发送邮件"""
         try:
             # 创建 SMTP 连接
@@ -1794,12 +1812,15 @@ class EmailPoolManager:
             # 编码主题
             subject_encoded = Header(subject, 'utf-8').encode()
             
+            # Content-Type
+            content_type = 'text/html; charset=utf-8' if is_html else 'text/plain; charset=utf-8'
+            
             # 构建邮件内容（纯字符串拼接）
             mail_parts = [
                 f'From: {email_config["username"]}',
                 f'To: {",".join(recipients)}',
                 f'Subject: {subject_encoded}',
-                'Content-Type: text/plain; charset=utf-8',
+                f'Content-Type: {content_type}',
                 'Content-Transfer-Encoding: base64',
                 ''
             ]
@@ -2428,12 +2449,14 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = 3600 * 24  # 24小时
 
-# 生产环境强制 HTTPS（但不设置域名，让浏览器自动处理）
+# 生产环境配置（兼容 HTTP 和 HTTPS）
 if app.config.get('PRODUCTION_MODE', False):
-    # 注意：SESSION_COOKIE_SECURE=True 要求必须使用 HTTPS
-    # 如果通过 HTTP 访问，session 将无法工作
-    app.config['SESSION_COOKIE_SECURE'] = True
-    # 不设置 SESSION_COOKIE_DOMAIN，让浏览器自动根据访问域名设置
+    # 生产模式下，如果有 X-Forwarded-Proto 头说明通过反向代理访问
+    # 根据实际协议动态设置 cookie secure 属性
+    app.config['SESSION_COOKIE_SECURE'] = False  # 默认允许 HTTP
+    # 注意：如果使用 HTTPS，请确保 Nginx 配置了 X-Forwarded-Proto 头
+    # 并取消下面的注释：
+    # app.config['SESSION_COOKIE_SECURE'] = True
 else:
     app.config['SESSION_COOKIE_SECURE'] = False  # 开发环境不需要 HTTPS
 
@@ -3895,6 +3918,7 @@ def schedule_toggle():
         conn.close()
 
 # ===================== MC服务器状态查询 API =====================
+
 @app.route('/mc_server/status', methods=['POST'])
 
 def mc_server_status():
@@ -4548,6 +4572,177 @@ def admin_test_email():
         import traceback
         traceback.print_exc()
         return jsonify({'ok': 0, 'msg': f'发送失败: {str(e)}'})
+
+def convert_markdown_to_html(content):
+    """将Markdown转换为HTML"""
+    if MARKDOWN_ENABLED:
+        try:
+            return marked.marked(content)
+        except Exception as e:
+            print(f"Markdown转换失败: {e}")
+    
+    # 简单Markdown转换（备用）
+    html = content
+    # 标题
+    html = re.sub(r'^### (.+)$', r'<h3>\1</h3>', html, flags=re.MULTILINE)
+    html = re.sub(r'^## (.+)$', r'<h2>\1</h2>', html, flags=re.MULTILINE)
+    html = re.sub(r'^# (.+)$', r'<h1>\1</h1>', html, flags=re.MULTILINE)
+    # 粗体
+    html = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', html)
+    # 斜体
+    html = re.sub(r'\*(.+?)\*', r'<em>\1</em>', html)
+    # 链接
+    html = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2">\1</a>', html)
+    # 换行
+    html = html.replace('\n\n', '</p><p>').replace('\n', '<br>')
+    # 包裹在段落中
+    html = '<p>' + html + '</p>'
+    return html
+
+def wrap_html_email(content, title=''):
+    """包装HTML邮件，添加基本样式"""
+    return f'''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.8; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }}
+        h1 {{ color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
+        h2 {{ color: #34495e; }}
+        h3 {{ color: #7f8c8d; }}
+        p {{ margin: 15px 0; }}
+        a {{ color: #3498db; text-decoration: none; }}
+        a:hover {{ text-decoration: underline; }}
+        strong {{ color: #2c3e50; }}
+        ul, ol {{ padding-left: 25px; }}
+        li {{ margin: 8px 0; }}
+        code {{ background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: Consolas, Monaco, monospace; }}
+        blockquote {{ border-left: 4px solid #3498db; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; color: #555; }}
+        .footer {{ margin-top: 30px; padding-top: 15px; border-top: 1px solid #eee; color: #999; font-size: 12px; }}
+    </style>
+</head>
+<body>
+    {content}
+    <div class="footer">
+        <p>此邮件由 MC档期排期站 系统发送 · {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+    </div>
+</body>
+</html>'''
+
+@app.route('/admin/batch_email', methods=['POST'])
+def admin_batch_email():
+    """批量发送邮件API"""
+    current_user = session.get('user', '')
+    current_role = get_user_role(current_user) if current_user else ROLE_NORMAL
+    if current_role not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    data = request.json or {}
+    recipients = data.get('recipients', [])
+    subject = data.get('subject', '')
+    content = data.get('content', '')
+    email_index = data.get('email_index')  # None表示自动轮换
+    interval = int(data.get('interval', 3))
+    
+    if not recipients:
+        return jsonify({'ok': 0, 'msg': '请输入收件人邮箱'})
+    if not subject:
+        return jsonify({'ok': 0, 'msg': '请输入邮件标题'})
+    if not content:
+        return jsonify({'ok': 0, 'msg': '请输入邮件内容'})
+    
+    if not email_pool_manager:
+        return jsonify({'ok': 0, 'msg': '邮箱池未初始化'})
+    
+    # 将Markdown转换为HTML并包装
+    html_content = convert_markdown_to_html(content)
+    html_email = wrap_html_email(html_content, subject)
+    
+    results = {
+        'success': 0,
+        'failed': 0,
+        'failed_list': [],
+        'total': len(recipients)
+    }
+    
+    # 发送邮件
+    import time
+    for i, recipient in enumerate(recipients):
+        # 默认使用主邮箱（第一个邮箱）
+        target_config = EMAIL_POOL[0]
+        
+        try:
+            success = email_pool_manager._send_with_smtp(
+                target_config,
+                [recipient],
+                subject,
+                html_email,
+                is_html=True
+            )
+            
+            if success:
+                results['success'] += 1
+                email_pool_manager._increment_email_usage(target_config['username'])
+            else:
+                results['failed'] += 1
+                results['failed_list'].append({'email': recipient, 'reason': '发送失败'})
+        except Exception as e:
+            results['failed'] += 1
+            results['failed_list'].append({'email': recipient, 'reason': str(e)})
+        
+        # 发送间隔
+        if i < len(recipients) - 1:
+            time.sleep(interval)
+    
+    return jsonify({'ok': 1, 'results': results})
+
+@app.route('/admin/batch_single', methods=['POST'])
+def admin_batch_single():
+    """单封邮件发送API（用于批量发送的实时进度）"""
+    current_user = session.get('user', '')
+    current_role = get_user_role(current_user) if current_user else ROLE_NORMAL
+    if current_role not in (ROLE_ADMIN, ROLE_SUPER_ADMIN):
+        return jsonify({'ok': 0, 'msg': '权限不足'})
+    
+    data = request.json or {}
+    recipient = data.get('recipient', '')
+    subject = data.get('subject', '')
+    content = data.get('content', '')
+    email_index = data.get('email_index')
+    
+    if not recipient:
+        return jsonify({'ok': 0, 'msg': '请输入收件人邮箱'})
+    if not subject:
+        return jsonify({'ok': 0, 'msg': '请输入邮件标题'})
+    if not content:
+        return jsonify({'ok': 0, 'msg': '请输入邮件内容'})
+    
+    if not email_pool_manager or not EMAIL_POOL:
+        return jsonify({'ok': 0, 'msg': '邮箱池未初始化'})
+    
+    # 将Markdown转换为HTML并包装
+    html_content = convert_markdown_to_html(content)
+    html_email = wrap_html_email(html_content, subject)
+    
+    # 使用选择的邮箱
+    target_config = EMAIL_POOL[email_index] if email_index < len(EMAIL_POOL) else EMAIL_POOL[0]
+    
+    try:
+        success = email_pool_manager._send_with_smtp(
+            target_config,
+            [recipient],
+            subject,
+            html_email,
+            is_html=True
+        )
+        
+        if success:
+            email_pool_manager._increment_email_usage(target_config['username'])
+            return jsonify({'ok': 1, 'msg': '发送成功'})
+        else:
+            return jsonify({'ok': 0, 'msg': '发送失败'})
+    except Exception as e:
+        return jsonify({'ok': 0, 'msg': str(e)})
 
 @app.route('/admin/email_pool/add', methods=['POST'])
 def admin_email_pool_add():
@@ -5368,27 +5563,44 @@ def admin_batch_delete_penalties():
 
 # ===================== 图片验证码 =====================
 import random
+import os
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 
+def find_font():
+    font_paths = [
+        'arial.ttf',
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+        '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
+        '/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf',
+        '/Library/Fonts/Arial.ttf',
+        'C:/Windows/Fonts/arial.ttf',
+        'C:/Windows/Fonts/arialbd.ttf',
+    ]
+    for path in font_paths:
+        if os.path.exists(path):
+            return path
+    return None
+
 def generate_captcha():
-    width, height = 150, 50
-    image = Image.new('RGB', (width, height), (255, 255, 255))
+    width, height = 130, 42
+    image = Image.new('RGB', (width, height), (240, 240, 240))
     draw = ImageDraw.Draw(image)
     
-    chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+    chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
     captcha_text = ''.join(random.choice(chars) for _ in range(4))
     
-    font_size = 32
-    try:
-        font = ImageFont.truetype('arial.ttf', font_size)
-    except:
+    font_size = 26
+    font_path = find_font()
+    if font_path:
+        font = ImageFont.truetype(font_path, font_size)
+    else:
         font = ImageFont.load_default()
     
     for i, char in enumerate(captcha_text):
-        x = 15 + i * 32
-        y = random.randint(5, height - 40)
-        draw.text((x, y), char, font=font, fill=(random.randint(0, 150), random.randint(0, 150), random.randint(0, 150)))
+        x = 12 + i * 28
+        y = random.randint(3, height - 32)
+        draw.text((x, y), char, font=font, fill=(random.randint(50, 120), random.randint(50, 120), random.randint(50, 120)))
     
     for _ in range(20):
         x1 = random.randint(0, width)
@@ -5603,22 +5815,7 @@ def register():
         conn.commit()
         
         send_notification(user_id, "🎉 欢迎加入MC档期排期站！", 
-                         f"""亲爱的 {nickname}：
-
-欢迎加入MC档期排期站！
-
-🎮 您现在可以：
-• 浏览所有服务器档期信息
-• 预约您感兴趣的服务器
-• 申请成为档主，发布自己的服务器档期
-
-💡 温馨提示：
-• 请完善您的个人资料
-• 遵守社区规则，文明交流
-• 如有问题，请联系管理员
-
-祝您游戏愉快！
-""", 'welcome_notify')
+                         f"亲爱的 {nickname}：\n\n欢迎加入MC档期排期站！\n\n🎮 您现在可以：\n• 浏览所有服务器档期信息\n• 预约您感兴趣的服务器\n• 申请成为档主，发布自己的服务器档期\n\n💡 温馨提示：\n• 请完善您的个人资料\n• 遵守社区规则，文明交流\n• 如有问题，请联系管理员\n\n祝您游戏愉快！", 'welcome_notify')
         
         conn.close()
         
