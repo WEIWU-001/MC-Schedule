@@ -116,10 +116,8 @@ class Updater:
             req.add_header('Accept', 'application/zip')
             
             with urllib.request.urlopen(req, timeout=120) as resp:
-                # 处理重定向（GitHub zipball_url 会重定向到实际文件）
                 final_url = resp.geturl()
                 
-                # 检查是否重定向到 HTML 页面（通常表示错误）
                 if final_url.endswith('.html') or 'github.com' in final_url and '/archive/' not in final_url:
                     content = resp.read()
                     if content.startswith(b'<!DOCTYPE') or content.startswith(b'<html'):
